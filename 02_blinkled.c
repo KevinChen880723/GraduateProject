@@ -34,13 +34,13 @@ static wiced_semaphore_t                    msg_semaphore;
 static wiced_semaphore_t                    wake_semaphore;
 static wiced_mqtt_security_t                security;
 static wiced_bool_t                         is_connected = WICED_FALSE;
-static uint8_t                              pub_in_progress = 0;
 
 /******************************************************
  *               Static Function Definitions
  ******************************************************/
 /*
  * A blocking call to an expected event.
+ * 
  */
 static wiced_result_t wait_for_response( wiced_mqtt_event_type_t event, uint32_t timeout )
 {
@@ -60,6 +60,8 @@ static wiced_result_t wait_for_response( wiced_mqtt_event_type_t event, uint32_t
 
 /*
  * Call back function to handle connection events.
+ * (How to know we need what kind of parameter?
+ *  Check by the parameter type of "mqtt_conn_open", you will see the data type of call back function)
  */
 static wiced_result_t mqtt_connection_event_cb( wiced_mqtt_object_t mqtt_object, wiced_mqtt_event_info_t *event )
 {
@@ -95,14 +97,21 @@ static wiced_result_t mqtt_conn_open( wiced_mqtt_object_t mqtt_obj, wiced_ip_add
     wiced_result_t ret = WICED_SUCCESS;
 
     memset( &conninfo, 0, sizeof( conninfo ) );
-    conninfo.port_number = 0;
-    conninfo.mqtt_version = WICED_MQTT_PROTOCOL_VER4;
-    conninfo.clean_session = 1;
+    conninfo.port_number = 0;                           /*Select the port we want to connect. 0 means default values(8883 or 1883)*/
+    conninfo.mqtt_version = WICED_MQTT_PROTOCOL_VER4;   /*MQTT version, supported versions are 3 and 4.*/
+    conninfo.clean_session = 1;                         /*Indicates if the session to be cleanly started(?)*/
     conninfo.client_id = (uint8_t*) CLIENT_ID;
-    conninfo.keep_alive = 5;
-    conninfo.password = NULL;
-    conninfo.username = NULL;
+    conninfo.keep_alive = 5;                            /*Indicates keep alive interval to Broker(?)*/
+    conninfo.password = NULL;                           /* Password to connect to Broker */
+    conninfo.username = NULL;                           /* User name to connect to Broker */
     conninfo.peer_cn = (uint8_t*) MQTT_BROKER_PEER_COMMON_NAME;
+
+    /*
+     * Because we have already save relational security information in the variable security, so we can create a safety MQTT connection
+     * address : IP address of Broker. In the few steps before, we have already get the IP address of Broker by using wiced_hostname_lookup
+     * callback : The call back function will be triggered when some connection event happen
+     * conninfo : Some information related to connection of MQTT 
+     */
     ret = wiced_mqtt_connect( mqtt_obj, address, interface, callback, security, &conninfo );
     if ( ret != WICED_SUCCESS )
     {
@@ -136,7 +145,7 @@ static wiced_result_t mqtt_conn_close( wiced_mqtt_object_t mqtt_obj )
  */
 static wiced_result_t mqtt_app_publish( wiced_mqtt_object_t mqtt_obj, uint8_t qos, uint8_t *topic, uint8_t *data, uint32_t data_len )
 {
-    wiced_mqtt_msgid_t pktid;
+    wiced_mqtt_msgid_t pktid;   //The variable used for check connection result
 
     pktid = wiced_mqtt_publish( mqtt_obj, topic, data, data_len, qos );
 
@@ -164,9 +173,6 @@ void receiveUART(wiced_thread_arg_t arg)
             if(strcmp(receiveData , "12345") > 0)
             {wiced_uart_transmit_bytes(WICED_UART_3 , receiveData , strlen(receiveData));
                 strcpy(msg,receiveData);
-
-                if(pub_in_progress == 0)
-                    pub_in_progress = 1;
                 wiced_uart_transmit_bytes(WICED_UART_1 , msg , strlen(msg));
                 wiced_rtos_set_semaphore( &wake_semaphore );
             }
@@ -205,7 +211,7 @@ void application_start()
             .flow_control = FLOW_CONTROL_DISABLED
     };
 
-    //Create a buffer for UART rx data, then initial UART3, which is routed to P6:38(RX)¡BP6:39(TX)
+    //Create a buffer for UART rx data, then initial UART3, which is routed to P6:38(RX)ï¿½BP6:39(TX)
     wiced_ring_buffer_t rx_buffer;
     uint8_t rx_data[RX_BUFFER_SIZE];
     ring_buffer_init(&rx_buffer, rx_data, RX_BUFFER_SIZE );
@@ -214,10 +220,16 @@ void application_start()
     //Initial UART1, this is use for debugging
     wiced_uart_init(WICED_UART_1,&uart_config,NULL);
 
-    /* Get AWS root certificate, client certificate and private key respectively */
+    /* 
+     * Get AWS root certificate, client certificate and private key respectively 
+     * So we can safely connect to AWS IoT core by using MQTT in future steps
+     */
+
+    //Root CA save to variable security.ca_cert, also save the length of Root CA to variable security.ca_cert_len
     resource_get_readonly_buffer( &resources_apps_DIR_aws_iot_DIR_rootca_cer, 0, MQTT_MAX_RESOURCE_SIZE, &size_out, (const void **) &security.ca_cert );
     security.ca_cert_len = size_out;
 
+    //Device CA save to variable security.cert, also save the length of Device CA to variable security.cert_len
     resource_get_readonly_buffer( &resources_apps_DIR_aws_iot_DIR_client_cer, 0, MQTT_MAX_RESOURCE_SIZE, &size_out, (const void **) &security.cert );
     if(size_out < 64)
     {
@@ -226,6 +238,7 @@ void application_start()
     }
     security.cert_len = size_out;
 
+    //Private key save to security.key, also save the length of Private key to variable security.key_len
     resource_get_readonly_buffer( &resources_apps_DIR_aws_iot_DIR_privkey_cer, 0, MQTT_MAX_RESOURCE_SIZE, &size_out, (const void **) &security.key );
     if(size_out < 64)
     {
@@ -244,7 +257,10 @@ void application_start()
     }
     debug("Connect to Wi-Fi is succeeded\r\n");
 
-    /* Allocate memory for MQTT object*/
+    /* 
+     * Allocate memory for MQTT object
+     * mqtt_object is used for any action relative to MQTT connection like connect, publish
+     */
     mqtt_object = (wiced_mqtt_object_t) malloc( WICED_MQTT_OBJECT_MEMORY_SIZE_REQUIREMENT );
     if ( mqtt_object == NULL )
     {
@@ -253,7 +269,13 @@ void application_start()
     }
 
     debug( "Resolving IP address of MQTT broker...\r\n" );
-    //Use this API to get the IP address of my IoT endpoint
+    // Use this API to get the IP address of my IoT endpoint
+    /*
+     * MQTT_BROKER_ADDRESS : The DNS name we define at the begining. It is define as AWS IoT endpoint.
+     * broker_address : We will get corresponding IP address by using this API
+     * 10000 : Timeout value
+     * WICED_STA_INTERFACE : As our device is as station so choose STA interface (STA is stand for station)
+     */
     ret = wiced_hostname_lookup( MQTT_BROKER_ADDRESS, &broker_address, 10000, WICED_STA_INTERFACE );
     if ( ret == WICED_ERROR || broker_address.ip.v4 == 0 )
     {
@@ -262,7 +284,7 @@ void application_start()
     }
 
     wiced_gpio_output_low( WICED_LED2 );
-
+    /* If we want to use mqtt, semaphore we need to do the initialzation */
     wiced_rtos_init_semaphore( &wake_semaphore );
     wiced_mqtt_init( mqtt_object );
     wiced_rtos_init_semaphore( &msg_semaphore );
@@ -276,8 +298,11 @@ void application_start()
         debug("[MQTT] Opening connection...");
         do
         {
-            //mqtt_connection_event_cb is the call back function to handle connection events
-            //create the connection to AWS iot broker
+            /*
+             * create the connection to AWS IoT broker
+             * WICED_STA_INTERFACE : Because our device is used to be Wi-Fi station
+             * mqtt_connection_event_cb : A call back function to handle connection events
+             */
             ret = mqtt_conn_open( mqtt_object, &broker_address, WICED_STA_INTERFACE, mqtt_connection_event_cb, &security );
             wiced_rtos_delay_milliseconds( 100 );
             connection_retries++ ;
@@ -310,6 +335,11 @@ void application_start()
             debug(("[MQTT] Publishing..."));
             do
             {
+                /*
+                 * Publish message by using mqtt_object we set before.
+                 * It has already create a safe connection to AWS IoT Broker
+                 * WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE : This means QoS = 1 (proof your message will arrive, but maybe many times)
+                 */
                 ret = mqtt_app_publish( mqtt_object, WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE, (uint8_t*) WICED_TOPIC, (uint8_t*) msg, strlen( msg ) );
                 retries++ ;
             } while ( ( ret != WICED_SUCCESS ) && ( retries < MQTT_PUBLISH_RETRY_COUNT ) );
@@ -322,7 +352,6 @@ void application_start()
             {
                 debug((" Success\r\n"));
             }
-            pub_in_progress = 0;
 
             wiced_rtos_delay_milliseconds( 100 );
 
@@ -331,6 +360,7 @@ void application_start()
             wiced_gpio_output_high( WICED_LED2 );
             wiced_rtos_delay_milliseconds( 100 );
         }
+        // When connect or publish failed, close the connection
         wiced_rtos_delete_thread(&receiveUartHandle);
         debug(("[MQTT] Closing connection...\r\n"));
         mqtt_conn_close( mqtt_object );
