@@ -3,11 +3,20 @@
 #include "string.h"
 #include "mqtt_api.h"
 #include "resources.h"
+#include "cJSON.h"
 
 /************************* User global variables *******************************************/
 char receiveData[20]="";
-static wiced_thread_t receiveUartHandle;
+static wiced_thread_t receiveUartHandle , PublishMessageHandle;
 char* msg = "Hello World!!";
+/*Use for Shadow*/
+char *ShadowUpdateStr = "{ \"state\": {\"reported\": { \"status\": \"OFF\" } } }";
+char *out;
+cJSON *root;
+/*Use for MQTT*/
+wiced_mqtt_object_t   mqtt_object;
+uint32_t              size_out = 0;
+int                   retries = 0;
 
 /************************* User defines *******************************************/
 #define RX_BUFFER_SIZE 20
@@ -16,7 +25,7 @@ char* msg = "Hello World!!";
 /************************* (Copy from publisher.c) *******************************************/
 #define MQTT_BROKER_ADDRESS                 "a21yyexai8eunn-ats.iot.us-east-1.amazonaws.com"
 #define MQTT_BROKER_PEER_COMMON_NAME        "*.iot.us-east-1.amazonaws.com"
-#define WICED_TOPIC                         "Kevin_Topic"
+#define WICED_TOPIC                         "$aws/things/KEVIN_IoT_Thing/shadow/update"
 #define CLIENT_ID                           "wiced_publisher_aws"
 #define MQTT_REQUEST_TIMEOUT                (5000)
 #define MQTT_DELAY_IN_MILLISECONDS          (1000)
@@ -32,6 +41,7 @@ static wiced_ip_address_t                   broker_address;
 static wiced_mqtt_event_type_t              expected_event;
 static wiced_semaphore_t                    msg_semaphore;
 static wiced_semaphore_t                    wake_semaphore;
+static wiced_semaphore_t                    MQTTend_semaphore;
 static wiced_mqtt_security_t                security;
 static wiced_bool_t                         is_connected = WICED_FALSE;
 
@@ -170,9 +180,11 @@ void receiveUART(wiced_thread_arg_t arg)
     while(wiced_uart_receive_bytes(WICED_UART_3,receiveData,&dataSize,WICED_WAIT_FOREVER ) == WICED_SUCCESS)
     {
 
+            //Set the condition determine when does MQTT should send the data to Rule Engine
             if(strcmp(receiveData , "12345") > 0)
-            {wiced_uart_transmit_bytes(WICED_UART_3 , receiveData , strlen(receiveData));
-                strcpy(msg,receiveData);
+            {
+                //Send what data? Copy to msg (We will publish msg to Topic)
+                strcpy(msg,out);
                 wiced_uart_transmit_bytes(WICED_UART_1 , msg , strlen(msg));
                 wiced_rtos_set_semaphore( &wake_semaphore );
             }
@@ -180,7 +192,61 @@ void receiveUART(wiced_thread_arg_t arg)
 
 }
 
-void debug(char debugMessage[50])
+//Publish Message to
+void PublishMessage(wiced_thread_arg_t arg)
+{
+    /******************** Copy from publisher.c ***************/
+    wiced_result_t        ret = WICED_SUCCESS;
+    /**********************************************************/
+
+    while(1)
+    {
+        retries = 0;
+
+        //Wait for sending data(Maybe when receive correct data)
+        wiced_rtos_get_semaphore( &wake_semaphore,WICED_WAIT_FOREVER );
+        if ( is_connected == WICED_FALSE )
+        {
+            break;
+        }
+
+        //Publish the data
+        debugMsg(("[MQTT] Publishing..."));
+        do
+        {
+            /*
+             * Publish message by using mqtt_object we set before.
+             * It has already create a safe connection to AWS IoT Broker
+             * WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE : This means QoS = 1 (proof your message will arrive, but maybe many times)
+             */
+            ret = mqtt_app_publish( mqtt_object, WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE, (uint8_t*) WICED_TOPIC, (uint8_t*) msg, strlen( msg ) );
+            retries++ ;
+        } while ( ( ret != WICED_SUCCESS ) && ( retries < MQTT_PUBLISH_RETRY_COUNT ) );
+        if ( ret != WICED_SUCCESS )
+        {
+            debugMsg((" Failed\r\n"));
+            break;
+        }
+        else
+        {
+            debugMsg((" Success\r\n"));
+        }
+
+        wiced_rtos_delay_milliseconds( 100 );
+
+        wiced_gpio_output_low( WICED_LED2 );
+        wiced_rtos_delay_milliseconds( 100 );
+        wiced_gpio_output_high( WICED_LED2 );
+        wiced_rtos_delay_milliseconds( 100 );
+    }
+    /*
+     * If run to here means MQTT disconnect, set the semaphore will let main function keep execute
+     * So it will deinit some resources
+     */
+    wiced_rtos_set_semaphore( &MQTTend_semaphore );
+}
+
+void debugMsg(char debugMessage[50])
 {
     wiced_uart_transmit_bytes(WICED_UART_1 , debugMessage , strlen(debugMessage));
 }
@@ -190,19 +256,12 @@ void debug(char debugMessage[50])
  */
 void application_start()
 {
-    wiced_result_t result = WICED_ERROR ;
-    char debugMessage[50];
-    /******************** Copy from publisher.c ***************/
-    wiced_mqtt_object_t   mqtt_object;
     wiced_result_t        ret = WICED_SUCCESS;
-    uint32_t              size_out = 0;
     int                   connection_retries = 0;
-    int                   retries = 0;
-    /**********************************************************/
 
     wiced_init();
 
-    //Costomize UART
+    //Customize UART
     wiced_uart_config_t uart_config=
     {
             .baud_rate = 115200,
@@ -233,7 +292,7 @@ void application_start()
     resource_get_readonly_buffer( &resources_apps_DIR_aws_iot_DIR_client_cer, 0, MQTT_MAX_RESOURCE_SIZE, &size_out, (const void **) &security.cert );
     if(size_out < 64)
     {
-        debug( "\nNot a valid Certificate! Please replace the dummy certificate file 'resources/app/aws_iot/client.cer' with the one got from AWS\n\n" );
+        debugMsg( "\nNot a valid Certificate! Please replace the dummy certificate file 'resources/app/aws_iot/client.cer' with the one got from AWS\n\n" );
         return;
     }
     security.cert_len = size_out;
@@ -242,7 +301,7 @@ void application_start()
     resource_get_readonly_buffer( &resources_apps_DIR_aws_iot_DIR_privkey_cer, 0, MQTT_MAX_RESOURCE_SIZE, &size_out, (const void **) &security.key );
     if(size_out < 64)
     {
-        debug( "\nNot a valid Private Key! Please replace the dummy private key file 'resources/app/aws_iot/privkey.cer' with the one got from AWS\n\n" ) ;
+        debugMsg( "\nNot a valid Private Key! Please replace the dummy private key file 'resources/app/aws_iot/privkey.cer' with the one got from AWS\n\n" ) ;
         return;
     }
     security.key_len = size_out;
@@ -253,9 +312,9 @@ void application_start()
     /*Connect to Wi-Fi*/
     while(wiced_network_up(WICED_STA_INTERFACE,WICED_USE_EXTERNAL_DHCP_SERVER,NULL) != WICED_SUCCESS )
     {
-        debug("Connect to Wi-Fi is failed\r\n");
+        debugMsg("Connect to Wi-Fi is failed\r\n");
     }
-    debug("Connect to Wi-Fi is succeeded\r\n");
+    debugMsg("Connect to Wi-Fi is succeeded\r\n");
 
     /* 
      * Allocate memory for MQTT object
@@ -264,11 +323,11 @@ void application_start()
     mqtt_object = (wiced_mqtt_object_t) malloc( WICED_MQTT_OBJECT_MEMORY_SIZE_REQUIREMENT );
     if ( mqtt_object == NULL )
     {
-        debug("Don't have memory to allocate for mqtt object...\r\n");
+        debugMsg("Don't have memory to allocate for mqtt object...\r\n");
         return;
     }
 
-    debug( "Resolving IP address of MQTT broker...\r\n" );
+    debugMsg( "Resolving IP address of MQTT broker...\r\n" );
     // Use this API to get the IP address of my IoT endpoint
     /*
      * MQTT_BROKER_ADDRESS : The DNS name we define at the begining. It is define as AWS IoT endpoint.
@@ -279,7 +338,7 @@ void application_start()
     ret = wiced_hostname_lookup( MQTT_BROKER_ADDRESS, &broker_address, 10000, WICED_STA_INTERFACE );
     if ( ret == WICED_ERROR || broker_address.ip.v4 == 0 )
     {
-        debug(("Error in resolving DNS\r\n"));
+        debugMsg(("Error in resolving DNS\r\n"));
         return;
     }
 
@@ -288,14 +347,22 @@ void application_start()
     wiced_rtos_init_semaphore( &wake_semaphore );
     wiced_mqtt_init( mqtt_object );
     wiced_rtos_init_semaphore( &msg_semaphore );
+    wiced_rtos_init_semaphore( &MQTTend_semaphore );
+    root = cJSON_Parse(ShadowUpdateStr);
+    out=cJSON_Print(root);  cJSON_Delete(root);
 
+    /*
+     * Why do I use a while(1) here?
+     * Because if connection of MQTT is failed, then continue to here.
+     * Try to connect again.
+     */
     while(1)
     {
         connection_retries = 0;
         is_connected = WICED_FALSE;
         retries = 0;
 
-        debug("[MQTT] Opening connection...");
+        debugMsg("[MQTT] Opening connection...");
         do
         {
             /*
@@ -314,61 +381,27 @@ void application_start()
             wiced_rtos_delay_milliseconds( MQTT_DELAY_IN_MILLISECONDS * 5 );
             continue;
         }
-        debug("Success\r\n");
+        debugMsg("Success\r\n");
         is_connected = WICED_TRUE;
 
+        //Start to run Publishing function
+        wiced_rtos_create_thread(&PublishMessageHandle,9,"PublishMessageThread",PublishMessage,1024,NULL);
         //Start to run RX function
         wiced_rtos_create_thread(&receiveUartHandle,10,"UartRxThread",receiveUART,1024,NULL);
 
-        while(1)
-        {
-            retries = 0;
+        //When MQTT disconnected (before MQTT disconnect this thread will suspend)
+        wiced_rtos_get_semaphore( &MQTTend_semaphore,WICED_WAIT_FOREVER );
 
-            //Wait for sending data(Maybe when receive correct data)
-            wiced_rtos_get_semaphore( &wake_semaphore,WICED_WAIT_FOREVER );
-            if ( is_connected == WICED_FALSE )
-            {
-                break;
-            }
-
-            //Publish the data
-            debug(("[MQTT] Publishing..."));
-            do
-            {
-                /*
-                 * Publish message by using mqtt_object we set before.
-                 * It has already create a safe connection to AWS IoT Broker
-                 * WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE : This means QoS = 1 (proof your message will arrive, but maybe many times)
-                 */
-                ret = mqtt_app_publish( mqtt_object, WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE, (uint8_t*) WICED_TOPIC, (uint8_t*) msg, strlen( msg ) );
-                retries++ ;
-            } while ( ( ret != WICED_SUCCESS ) && ( retries < MQTT_PUBLISH_RETRY_COUNT ) );
-            if ( ret != WICED_SUCCESS )
-            {
-                debug((" Failed\r\n"));
-                break;
-            }
-            else
-            {
-                debug((" Success\r\n"));
-            }
-
-            wiced_rtos_delay_milliseconds( 100 );
-
-            wiced_gpio_output_low( WICED_LED2 );
-            wiced_rtos_delay_milliseconds( 100 );
-            wiced_gpio_output_high( WICED_LED2 );
-            wiced_rtos_delay_milliseconds( 100 );
-        }
         // When connect or publish failed, close the connection
         wiced_rtos_delete_thread(&receiveUartHandle);
-        debug(("[MQTT] Closing connection...\r\n"));
+        debugMsg(("[MQTT] Closing connection...\r\n"));
         mqtt_conn_close( mqtt_object );
     }
     wiced_rtos_deinit_semaphore( &msg_semaphore );
-    debug(("[MQTT] Deinit connection...\r\n"));
+    debugMsg(("[MQTT] Deinit connection...\r\n"));
     ret = wiced_mqtt_deinit( mqtt_object );
     wiced_rtos_deinit_semaphore( &wake_semaphore );
+    wiced_rtos_deinit_semaphore( &MQTTend_semaphore );
     free( mqtt_object );
     mqtt_object = NULL;
 
