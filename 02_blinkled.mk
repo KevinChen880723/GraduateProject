@@ -5,7 +5,8 @@ GLOBAL_DEFINES += WICED_DISABLE_STDIO
 
 WIFI_CONFIG_DCT_H := wifi_config_dct.h
 
-$(NAME)_COMPONENTS := protocols/MQTT
+$(NAME)_COMPONENTS := protocols/MQTT \
+					  utilities/cJSON
 
 $(NAME)_RESOURCES  := apps/aws_iot/rootca.cer \
                       apps/aws_iot/client.cer \
