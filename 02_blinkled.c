@@ -11,8 +11,7 @@ char receiveData[20]="";
 static wiced_thread_t receiveUartHandle , PublishMessageHandle;
 char                  *msg = "Hello World!!";
 /*Use for Shadow*/
-char                  *ShadowUpdateStr = "{ \"state\": {\"reported\": { \"status\": \"OFF\" , \"doorLock\":\"OFF\"} } }";
-char                  *ShadowTest = "{ \"state\": {\"desired\": { \"status\": \"OFF\" , \"doorLock\":\"OFF\"} } }";
+char                  *ShadowUpdateStr = "";
 char                  *out;
 cJSON                 *root;
 cJSON *json, *state, *desired;
@@ -25,12 +24,14 @@ uint32_t              size_out = 0;
 int                   retries = 0;
 char                  *IotThing = "KEVIN_IoT_Thing";
 char                  *IotShadowTopic = "" , *IotControlTopic = "Control";
+char                  *on = "ON", *off = "OFF";
 wiced_mqtt_topic_msg_t receivedMsg;
 bool shadowReceive_flag = false;
 
 /************************* User defines *******************************************/
 #define RX_BUFFER_SIZE 20
 #define RxDataSize 5
+#define ShadowUpdateMsg "{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }"
 
 /************************* (Copy from publisher.c) *******************************************/
 #define MQTT_BROKER_ADDRESS                 "a21yyexai8eunn-ats.iot.us-east-1.amazonaws.com"
@@ -99,25 +100,14 @@ static wiced_result_t mqtt_connection_event_cb( wiced_mqtt_object_t mqtt_object,
         {
             expected_event = event->type;
             wiced_rtos_set_semaphore( &msg_semaphore );
-            debugMsg("6666\r\n");
         }
             break;
         case WICED_MQTT_EVENT_TYPE_PUBLISH_MSG_RECEIVED:
         {
             receivedMsg = event->data.pub_recvd;
-            //Desired shadow
-            debugMsg(receivedMsg.topic);
-            debugMsg("\r\n");
-            debugMsg(IotShadowTopic);
-            debugMsg("\r\n");
-            //strncpy(JSON_temp,receivedMsg.data, receivedMsg.data_len);
-            //strcpy(JSON_temp,ShadowTest);
-            //JSON_temp = ShadowTest;
+
             JSON_temp = (char*)receivedMsg.data;
             JSON_temp[receivedMsg.data_len] = '\0';
-              //              debugMsg(JSON_temp);
-            debugMsg(cJSON_Print(cJSON_Parse(JSON_temp)));
-            //debugMsg(JSON_temp);
             if(strncmp((char *)receivedMsg.topic, IotShadowTopic, receivedMsg.topic_len) == 0)
             {
                 if(strstr(JSON_temp,"desired") != NULL)
@@ -253,7 +243,10 @@ void receiveUART(wiced_thread_arg_t arg)
             //Set the condition determine when does MQTT should send the data to Rule Engine
             if(strcmp(receiveData , "12345") > 0)
             {
-
+                sprintf(ShadowUpdateStr, "{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", "ON", "ON");
+                debugMsg(ShadowUpdateStr);
+                debugMsg("\r\n{ \"state\": {\"reported\": { \"status\": \"ON\" , \"doorLock\":\"ON\"} } }\r\n");
+                //root = cJSON_Parse("{ \"state\": {\"reported\": { \"status\": \"ON\" , \"doorLock\":\"ON\"} } }");
                 root = cJSON_Parse(ShadowUpdateStr);
                 out=cJSON_Print(root);
                 //Send what data? Copy to msg (We will publish msg to Topic)
@@ -292,7 +285,7 @@ void PublishMessage(wiced_thread_arg_t arg)
              * It has already create a safe connection to AWS IoT Broker
              * WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE : This means QoS = 1 (proof your message will arrive, but maybe many times)
              */
-            ret = mqtt_app_publish( mqtt_object, WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE, (uint8_t*) IotShadowTopic, (uint8_t*) msg, strlen( msg ) );
+            ret = mqtt_app_publish( mqtt_object, WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE, (uint8_t*) "Control"/*IotShadowTopic*/, (uint8_t*) msg, strlen( msg ) );
             retries++ ;
         } while ( ( ret != WICED_SUCCESS ) && ( retries < MQTT_PUBLISH_RETRY_COUNT ) );
         if ( ret != WICED_SUCCESS )
