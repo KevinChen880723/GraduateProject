@@ -4,35 +4,45 @@
 #include "mqtt_api.h"
 #include "resources.h"
 #include "cJSON.h"
+#include "stdbool.h"
 
 /************************* User global variables *******************************************/
 char receiveData[20]="";
-static wiced_thread_t receiveUartHandle , PublishControlMessageHandle;
-char* msg = "Hello World!!";
+static wiced_thread_t receiveUartHandle , PublishMessageHandle , ParseJSONHandle;
+char                  *msg = "Hello World!!";
 /*Use for Shadow*/
-char *ShadowUpdateStr = "{ \"state\": {\"reported\": { \"status\": \"OFF\", \"doorLock\":\"OFF\"} } }";
-char *out;
-cJSON *root;
+char                  *ShadowUpdateStr = "{ \"state\": {\"reported\": { \"status\": \"OFF\" , \"doorLock\":\"OFF\"} } }";
+char                  *ShadowTest = "{ \"state\": {\"desired\": { \"status\": \"OFF\" , \"doorLock\":\"OFF\"} } }";
+char                  *out;
+cJSON                 *root;
+cJSON *json, *state, *desired;
+char *status="", *doorLock="";
+char *JSON_temp;
+
 /*Use for MQTT*/
-wiced_mqtt_object_t   control_mqtt_object , shadow_mqtt_object;
+wiced_mqtt_object_t   mqtt_object;
 uint32_t              size_out = 0;
 int                   retries = 0;
+char                  *IotThing = "KEVIN_IoT_Thing";
+char                  *IotShadowTopic = "" , *IotControlTopic = "Control";
+wiced_mqtt_topic_msg_t receivedMsg;
+static wiced_semaphore_t                    ParseJSONSemaphore;
+bool shadowReceive_flag = false;
 
 /************************* User defines *******************************************/
 #define RX_BUFFER_SIZE 20
 #define RxDataSize 5
-#define off "OFF"
-#define on "ON"
 
 /************************* (Copy from publisher.c) *******************************************/
 #define MQTT_BROKER_ADDRESS                 "a21yyexai8eunn-ats.iot.us-east-1.amazonaws.com"
 #define MQTT_BROKER_PEER_COMMON_NAME        "*.iot.us-east-1.amazonaws.com"
-#define WICED_TOPIC                         "$aws/things/KEVIN_IoT_Thing/shadow/update"
+#define WICED_TOPIC                         "$aws/things/%s/shadow/update"
 #define CLIENT_ID                           "wiced_publisher_aws"
 #define MQTT_REQUEST_TIMEOUT                (5000)
 #define MQTT_DELAY_IN_MILLISECONDS          (1000)
 #define MQTT_MAX_RESOURCE_SIZE              (0x7fffffff)
 #define MQTT_PUBLISH_RETRY_COUNT            (3)
+#define MQTT_SUBSCRIBE_RETRY_COUNT          (3)
 /********************************************************************/
 /******************************************************
  *               Variable Definitions (Copy from publisher.c)
@@ -44,6 +54,8 @@ static wiced_semaphore_t                    wake_semaphore;
 static wiced_semaphore_t                    MQTTend_semaphore;
 static wiced_mqtt_security_t                security;
 static wiced_bool_t                         is_connected = WICED_FALSE;
+static wiced_bool_t                         shadow_is_subscribed = WICED_FALSE;
+static wiced_bool_t                         control_is_subscribed = WICED_FALSE;
 
 /******************************************************
  *               Static Function Definitions
@@ -70,11 +82,10 @@ static wiced_result_t wait_for_response( wiced_mqtt_event_type_t event, uint32_t
 
 /*
  * Call back function to handle connection events.
- * when I want to use Rule Engine or receive data from cloud by cloud (these two function can usesame call back function)
  * (How to know we need what kind of parameter?
  *  Check by the parameter type of "mqtt_conn_open", you will see the data type of call back function)
  */
-static wiced_result_t mqtt_control_connection_event_cb( wiced_mqtt_object_t mqtt_object, wiced_mqtt_event_info_t *event )
+static wiced_result_t mqtt_connection_event_cb( wiced_mqtt_object_t mqtt_object, wiced_mqtt_event_info_t *event )
 {
     switch ( event->type )
     {
@@ -89,38 +100,52 @@ static wiced_result_t mqtt_control_connection_event_cb( wiced_mqtt_object_t mqtt
         {
             expected_event = event->type;
             wiced_rtos_set_semaphore( &msg_semaphore );
+            debugMsg("6666\r\n");
         }
-            break;
-        case WICED_MQTT_EVENT_TYPE_PUBLISH_MSG_RECEIVED:
-            break;
-        default:
-            break;
-    }
-    return WICED_SUCCESS;
-}
-
-/*
- * The call back function used for Shadow event EX: desired (controlled by cloud)
- */
-static wiced_result_t mqtt_shadow_connection_event_cb( wiced_mqtt_object_t mqtt_object, wiced_mqtt_event_info_t *event )
-{
-    switch ( event->type )
-    {
-        case WICED_MQTT_EVENT_TYPE_DISCONNECTED:
-            is_connected = WICED_FALSE; //Use this variable to check the status of MQTT connection
-
-        case WICED_MQTT_EVENT_TYPE_CONNECT_REQ_STATUS:
-        case WICED_MQTT_EVENT_TYPE_PUBLISHED:
-        case WICED_MQTT_EVENT_TYPE_SUBCRIBED:
-        case WICED_MQTT_EVENT_TYPE_UNSUBSCRIBED:
-            expected_event = event->type;
-            wiced_rtos_set_semaphore( &msg_semaphore );
             break;
         case WICED_MQTT_EVENT_TYPE_PUBLISH_MSG_RECEIVED:
         {
+            receivedMsg = event->data.pub_recvd;
+            //Desired shadow
+            debugMsg(receivedMsg.topic);
+            debugMsg("\r\n");
+            debugMsg(IotShadowTopic);
+            debugMsg("\r\n");
+            //strncpy(JSON_temp,receivedMsg.data, receivedMsg.data_len);
+            //strcpy(JSON_temp,ShadowTest);
+            //JSON_temp = ShadowTest;
+            JSON_temp = (char*)receivedMsg.data;
+            JSON_temp[receivedMsg.data_len] = '\0';
+              //              debugMsg(JSON_temp);
+            debugMsg(cJSON_Print(cJSON_Parse(JSON_temp)));
+            //debugMsg(JSON_temp);
+            if(strncmp((char *)receivedMsg.topic, IotShadowTopic, receivedMsg.topic_len) == 0)
+            {
+                if(strstr(JSON_temp,"desired") != NULL)
+                {
+                    json = cJSON_Parse(JSON_temp);
+                    state = cJSON_GetObjectItem(json, "state");
+                    desired = cJSON_GetObjectItem(state, "desired");
+                    status = cJSON_GetObjectItem(desired, "status")->valuestring;
+                    doorLock = cJSON_GetObjectItem(desired, "doorLock")->valuestring;
 
+                    debugMsg("status: ");
+                    debugMsg(status);
+                    debugMsg("\r\ndoorLock: ");
+                    debugMsg(doorLock);
+                    debugMsg("\r\n");
+                }
+                else
+                    debugMsg("\r\nNot desired request!!\r\n");
+            }
+            //Use topic "control" to give some instruction to IoT device, then in the embedded I will publish relative results
+            else if(strncmp((char *)receivedMsg.topic, "Control", receivedMsg.topic_len) == 0)
+            {
+               // wiced_rtos_set_semaphore( &ParseJSONSemaphore );
+                debugMsg((char *)receivedMsg.data);
+            }
         }
-            break;
+        break;
         default:
             break;
     }
@@ -130,7 +155,7 @@ static wiced_result_t mqtt_shadow_connection_event_cb( wiced_mqtt_object_t mqtt_
 /*
  * Open a connection and wait for MQTT_REQUEST_TIMEOUT period to receive a connection open OK event
  */
-static wiced_result_t mqtt_conn_open( wiced_mqtt_object_t mqtt_obj, wiced_ip_address_t *address, wiced_interface_t interface, wiced_mqtt_callback_t callback, wiced_mqtt_security_t *security)
+static wiced_result_t mqtt_conn_open( wiced_mqtt_object_t mqtt_obj, wiced_ip_address_t *address, wiced_interface_t interface, wiced_mqtt_callback_t callback, wiced_mqtt_security_t *security )
 {
     wiced_mqtt_pkt_connect_t conninfo;
     wiced_result_t ret = WICED_SUCCESS;
@@ -190,7 +215,7 @@ static wiced_result_t mqtt_app_subscribe( wiced_mqtt_object_t mqtt_obj, char *to
     {
         return WICED_ERROR;
     }
-    if ( mqtt_wait_for( WICED_MQTT_EVENT_TYPE_SUBCRIBED, MQTT_REQUEST_TIMEOUT ) != WICED_SUCCESS )
+    if ( wait_for_response( WICED_MQTT_EVENT_TYPE_SUBCRIBED, MQTT_REQUEST_TIMEOUT ) != WICED_SUCCESS )
     {
         return WICED_ERROR;
     }
@@ -232,15 +257,50 @@ void receiveUART(wiced_thread_arg_t arg)
             {
                 //Send what data? Copy to msg (We will publish msg to Topic)
                 strcpy(msg,out);
-                wiced_uart_transmit_bytes(WICED_UART_1 , msg , strlen(msg));
+                //wiced_uart_transmit_bytes(WICED_UART_1 , msg , strlen(msg));
                 wiced_rtos_set_semaphore( &wake_semaphore );
             }
     }
 
 }
 
+void ParseJSON(wiced_thread_arg_t arg)
+{
+   while(1)
+   {
+       //debugMsg("start testing\r\n");
+
+       wiced_rtos_delay_milliseconds( 2000 );
+
+      //wiced_rtos_get_semaphore( &ParseJSONSemaphore,WICED_WAIT_FOREVER );
+       if(0){
+              debugMsg("88888\r\n");
+              /*cJSON *json, *state, *desired;
+              char *status="", *doorLock="";*/
+
+              //json = cJSON_Parse(receivedMsg.data);
+              json = cJSON_Parse(JSON_temp);
+              state = cJSON_GetObjectItem(json, "state");
+              debugMsg(cJSON_Print(state));
+              desired = cJSON_GetObjectItem(state, "desired");
+              debugMsg(cJSON_Print(desired));
+              //cJSON_Delete(state);
+              status = cJSON_GetObjectItem(desired, "status")->string;
+              doorLock = cJSON_GetObjectItem(desired, "doorLock")->string;
+              //cJSON_Delete(json);
+
+              debugMsg("status: ");
+              debugMsg(status);
+              debugMsg("\r\ndoorLock: ");
+              debugMsg(doorLock);
+              debugMsg("\r\n");
+              shadowReceive_flag = false;
+       }//debugMsg("end testing\r\n");
+   }
+}
+
 //Publish Message to
-void PublishControlMessage(wiced_thread_arg_t arg)
+void PublishMessage(wiced_thread_arg_t arg)
 {
     /******************** Copy from publisher.c ***************/
     wiced_result_t        ret = WICED_SUCCESS;
@@ -252,22 +312,21 @@ void PublishControlMessage(wiced_thread_arg_t arg)
 
         //Wait for sending data(Maybe when receive correct data)
         wiced_rtos_get_semaphore( &wake_semaphore,WICED_WAIT_FOREVER );
-        if ( is_connected == WICED_FALSE )
+        if ( is_connected == WICED_FALSE)
         {
             break;
         }
 
         //Publish the data
-        //We can use variable determine which we
-        debugMsg("[MQTT] Publishing to control TOPIC ...");
+        debugMsg(("[MQTT] Publishing..."));
         do
         {
             /*
-             * Publish message by using control_mqtt_object we set before.
+             * Publish message by using mqtt_object we set before.
              * It has already create a safe connection to AWS IoT Broker
              * WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE : This means QoS = 1 (proof your message will arrive, but maybe many times)
              */
-            ret = mqtt_app_publish( control_mqtt_object, WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE, (uint8_t*) WICED_TOPIC, (uint8_t*) msg, strlen( msg ) );
+            ret = mqtt_app_publish( mqtt_object, WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE, (uint8_t*) IotShadowTopic, (uint8_t*) msg, strlen( msg ) );
             retries++ ;
         } while ( ( ret != WICED_SUCCESS ) && ( retries < MQTT_PUBLISH_RETRY_COUNT ) );
         if ( ret != WICED_SUCCESS )
@@ -326,7 +385,7 @@ void application_start()
 
     //Initial UART1, this is use for debugging
     wiced_uart_init(WICED_UART_1,&uart_config,NULL);
-
+    debugMsg("Application start\r\n");
     /* 
      * Get AWS root certificate, client certificate and private key respectively 
      * So we can safely connect to AWS IoT core by using MQTT in future steps
@@ -366,10 +425,10 @@ void application_start()
 
     /* 
      * Allocate memory for MQTT object
-     * control_mqtt_object is used for any action relative to MQTT connection like connect, publish
+     * mqtt_object is used for any action relative to MQTT connection like connect, publish
      */
-    control_mqtt_object = (wiced_mqtt_object_t) malloc( WICED_MQTT_OBJECT_MEMORY_SIZE_REQUIREMENT );
-    if ( control_mqtt_object == NULL )
+    mqtt_object = (wiced_mqtt_object_t) malloc( WICED_MQTT_OBJECT_MEMORY_SIZE_REQUIREMENT );
+    if ( mqtt_object == NULL )
     {
         debugMsg("Don't have memory to allocate for mqtt object...\r\n");
         return;
@@ -393,11 +452,14 @@ void application_start()
     wiced_gpio_output_low( WICED_LED2 );
     /* If we want to use mqtt, semaphore we need to do the initialzation */
     wiced_rtos_init_semaphore( &wake_semaphore );
-    wiced_mqtt_init( control_mqtt_object );
+    wiced_mqtt_init( mqtt_object );
     wiced_rtos_init_semaphore( &msg_semaphore );
     wiced_rtos_init_semaphore( &MQTTend_semaphore );
+    wiced_rtos_init_semaphore( &ParseJSONSemaphore );
     root = cJSON_Parse(ShadowUpdateStr);
     out=cJSON_Print(root);  cJSON_Delete(root);
+
+    sprintf(IotShadowTopic,WICED_TOPIC,IotThing);
 
     /*
      * Why do I use a while(1) here?
@@ -416,9 +478,9 @@ void application_start()
             /*
              * create the connection to AWS IoT broker
              * WICED_STA_INTERFACE : Because our device is used to be Wi-Fi station
-             * mqtt_control_connection_event_cb : A call back function to handle connection events
+             * mqtt_connection_event_cb : A call back function to handle connection events
              */
-            ret = mqtt_conn_open( control_mqtt_object, &broker_address, WICED_STA_INTERFACE, mqtt_control_connection_event_cb, &security);
+            ret = mqtt_conn_open( mqtt_object, &broker_address, WICED_STA_INTERFACE, mqtt_connection_event_cb, &security );
             wiced_rtos_delay_milliseconds( 100 );
             connection_retries++ ;
         } while ( ( ret != WICED_SUCCESS ) && ( connection_retries < WICED_MQTT_CONNECTION_NUMBER_OF_RETRIES ) );
@@ -432,26 +494,62 @@ void application_start()
         debugMsg("Success\r\n");
         is_connected = WICED_TRUE;
 
+        debugMsg(("[MQTT] Subscribing to shadow Topic..."));
+        do
+        {
+            ret = mqtt_app_subscribe( mqtt_object, IotShadowTopic, WICED_MQTT_QOS_DELIVER_AT_MOST_ONCE );
+            retries++ ;
+        } while ( ( ret != WICED_SUCCESS ) && ( retries < MQTT_SUBSCRIBE_RETRY_COUNT ) );
+        if ( ret != WICED_SUCCESS )
+        {
+            debugMsg((" Failed\r\n"));
+        }
+        else
+        {
+            debugMsg(("Success...\r\n"));
+            retries = 0;
+        }
+
+        debugMsg(("[MQTT] Subscribing to control Topic..."));
+        do
+        {
+            ret = mqtt_app_subscribe( mqtt_object, IotControlTopic, WICED_MQTT_QOS_DELIVER_AT_MOST_ONCE );
+            retries++ ;
+        } while ( ( ret != WICED_SUCCESS ) && ( retries < MQTT_SUBSCRIBE_RETRY_COUNT ) );
+        if ( ret != WICED_SUCCESS )
+        {
+            debugMsg((" Failed\r\n"));
+        }
+        else
+        {
+            debugMsg(("Success...\r\n"));
+            retries = 0;
+        }
+
         //Start to run Publishing function
-        wiced_rtos_create_thread(&PublishControlMessageHandle,9,"PublishControlMessageThread",PublishControlMessage,1024,NULL);
+        wiced_rtos_create_thread(&PublishMessageHandle,9,"PublishMessageThread",PublishMessage,1024,NULL);
         //Start to run RX function
         wiced_rtos_create_thread(&receiveUartHandle,10,"UartRxThread",receiveUART,1024,NULL);
+        wiced_rtos_create_thread(&ParseJSONHandle,11,"ParseJSONThread",ParseJSON,1024,NULL);
 
         //When MQTT disconnected (before MQTT disconnect this thread will suspend)
         wiced_rtos_get_semaphore( &MQTTend_semaphore,WICED_WAIT_FOREVER );
 
         // When connect or publish failed, close the connection
         wiced_rtos_delete_thread(&receiveUartHandle);
+        wiced_rtos_delete_thread(&ParseJSONHandle);
         debugMsg(("[MQTT] Closing connection...\r\n"));
-        mqtt_conn_close( control_mqtt_object );
+        mqtt_conn_close( mqtt_object );
     }
     wiced_rtos_deinit_semaphore( &msg_semaphore );
     debugMsg(("[MQTT] Deinit connection...\r\n"));
-    ret = wiced_mqtt_deinit( control_mqtt_object );
+    ret = wiced_mqtt_deinit( mqtt_object );
     wiced_rtos_deinit_semaphore( &wake_semaphore );
     wiced_rtos_deinit_semaphore( &MQTTend_semaphore );
-    free( control_mqtt_object );
-    control_mqtt_object = NULL;
+    wiced_rtos_deinit_semaphore( &ParseJSONSemaphore );
+    free( mqtt_object );
+    cJSON_Delete(json);
+    mqtt_object = NULL;
 
-    return;
+    //return;
 }
