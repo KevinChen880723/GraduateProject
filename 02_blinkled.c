@@ -11,19 +11,20 @@ char receiveData[20]="";
 static wiced_thread_t receiveUartHandle , PublishMessageHandle;
 char                  *msg = "Hello World!!";
 /*Use for Shadow*/
-char                  *ShadowUpdateStr = "";
+char                  ShadowUpdateStr[100] = "";
 char                  *out;
 cJSON                 *root;
 cJSON *json, *state, *desired;
 char *status="", *doorLock="";
 char *JSON_temp;
+int shadowSW = 0;
 
 /*Use for MQTT*/
 wiced_mqtt_object_t   mqtt_object;
 uint32_t              size_out = 0;
 int                   retries = 0;
 char                  *IotThing = "KEVIN_IoT_Thing";
-char                  *IotShadowTopic = "" , *IotControlTopic = "Control";
+char                  IotShadowTopic[50] = "" , *IotControlTopic = "Control";
 char                  *on = "ON", *off = "OFF";
 wiced_mqtt_topic_msg_t receivedMsg;
 bool shadowReceive_flag = false;
@@ -54,8 +55,6 @@ static wiced_semaphore_t                    wake_semaphore;
 static wiced_semaphore_t                    MQTTend_semaphore;
 static wiced_mqtt_security_t                security;
 static wiced_bool_t                         is_connected = WICED_FALSE;
-static wiced_bool_t                         shadow_is_subscribed = WICED_FALSE;
-static wiced_bool_t                         control_is_subscribed = WICED_FALSE;
 
 /******************************************************
  *               Static Function Definitions
@@ -243,10 +242,28 @@ void receiveUART(wiced_thread_arg_t arg)
             //Set the condition determine when does MQTT should send the data to Rule Engine
             if(strcmp(receiveData , "12345") > 0)
             {
-                sprintf(ShadowUpdateStr, "{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", "ON", "ON");
-                debugMsg(ShadowUpdateStr);
-                debugMsg("\r\n{ \"state\": {\"reported\": { \"status\": \"ON\" , \"doorLock\":\"ON\"} } }\r\n");
-                //root = cJSON_Parse("{ \"state\": {\"reported\": { \"status\": \"ON\" , \"doorLock\":\"ON\"} } }");
+                if(strcmp(receiveData , "55555") > 0)
+                    shadowSW = 1;
+                else
+                    shadowSW = 0;
+                switch(shadowSW)
+                {
+                    case 0:
+                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", off, off);
+                        break;
+                    case 1:
+                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", off, on);
+                        break;
+                    case 2:
+                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", on, off);
+                        break;
+                    case 3:
+                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", on, on);
+                        break;
+                    default:
+                        break;
+                }
+
                 root = cJSON_Parse(ShadowUpdateStr);
                 out=cJSON_Print(root);
                 //Send what data? Copy to msg (We will publish msg to Topic)
@@ -285,7 +302,7 @@ void PublishMessage(wiced_thread_arg_t arg)
              * It has already create a safe connection to AWS IoT Broker
              * WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE : This means QoS = 1 (proof your message will arrive, but maybe many times)
              */
-            ret = mqtt_app_publish( mqtt_object, WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE, (uint8_t*) "Control"/*IotShadowTopic*/, (uint8_t*) msg, strlen( msg ) );
+            ret = mqtt_app_publish( mqtt_object, WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE, (uint8_t*)/* "Control"*/IotShadowTopic, (uint8_t*) msg, strlen( msg ) );
             retries++ ;
         } while ( ( ret != WICED_SUCCESS ) && ( retries < MQTT_PUBLISH_RETRY_COUNT ) );
         if ( ret != WICED_SUCCESS )
@@ -414,8 +431,7 @@ void application_start()
     wiced_mqtt_init( mqtt_object );
     wiced_rtos_init_semaphore( &msg_semaphore );
     wiced_rtos_init_semaphore( &MQTTend_semaphore );
-
-    sprintf(IotShadowTopic,WICED_TOPIC,IotThing);
+    sprintf(IotShadowTopic,(char *)WICED_TOPIC,IotThing);
 
     /*
      * Why do I use a while(1) here?
@@ -487,7 +503,7 @@ void application_start()
         //Start to run RX function
         wiced_rtos_create_thread(&receiveUartHandle,10,"UartRxThread",receiveUART,1024,NULL);
 
-        //When MQTT disconnected (before MQTT disconnect this thread will suspend)
+        //When MQTT disconnected (before MQTT disconnect, this thread will suspend)
         wiced_rtos_get_semaphore( &MQTTend_semaphore,WICED_WAIT_FOREVER );
 
         // When connect or publish failed, close the connection
