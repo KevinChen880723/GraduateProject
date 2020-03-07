@@ -14,17 +14,17 @@ char                  *msg = "Hello World!!";
 char                  ShadowUpdateStr[100] = "";
 char                  *out;
 cJSON                 *root;
-cJSON *json, *state, *desired;
-char *status="", *doorLock="";
+cJSON *json, *current, *state, *desired, *reported;
+char *status="OFF", *doorLock="ON";
 char *JSON_temp;
-int shadowSW = 0;
+int shadowSW = 0;   //Use this variable to choose the data of shadow report
 
 /*Use for MQTT*/
 wiced_mqtt_object_t   mqtt_object;
 uint32_t              size_out = 0;
 int                   retries = 0;
 char                  *IotThing = "KEVIN_IoT_Thing";
-char                  IotShadowTopic[50] = "" , *IotControlTopic = "Control";
+char                  IotShadowTopic[100] = "" , IotShadowDocumentTopic[100] = "" , *IotControlTopic = "Control";
 char                  *on = "ON", *off = "OFF";
 wiced_mqtt_topic_msg_t receivedMsg;
 bool shadowReceive_flag = false;
@@ -38,6 +38,7 @@ bool shadowReceive_flag = false;
 #define MQTT_BROKER_ADDRESS                 "a21yyexai8eunn-ats.iot.us-east-1.amazonaws.com"
 #define MQTT_BROKER_PEER_COMMON_NAME        "*.iot.us-east-1.amazonaws.com"
 #define WICED_TOPIC                         "$aws/things/%s/shadow/update"
+#define Shadow_Document_TOPIC               "$aws/things/%s/shadow/update/documents"
 #define CLIENT_ID                           "wiced_publisher_aws"
 #define MQTT_REQUEST_TIMEOUT                (5000)
 #define MQTT_DELAY_IN_MILLISECONDS          (1000)
@@ -107,21 +108,44 @@ static wiced_result_t mqtt_connection_event_cb( wiced_mqtt_object_t mqtt_object,
 
             JSON_temp = (char*)receivedMsg.data;
             JSON_temp[receivedMsg.data_len] = '\0';
-            if(strncmp((char *)receivedMsg.topic, IotShadowTopic, receivedMsg.topic_len) == 0)
+            debugMsg(IotShadowDocumentTopic);
+            debugMsg("\r\n");
+            debugMsg(receivedMsg.topic);
+            debugMsg("\r\n");
+            debugMsg("46546\r\n");
+            if(strncmp((char *)receivedMsg.topic, IotShadowDocumentTopic, receivedMsg.topic_len) == 0)
             {
+
                 if(strstr(JSON_temp,"desired") != NULL)
                 {
                     json = cJSON_Parse(JSON_temp);
-                    state = cJSON_GetObjectItem(json, "state");
+                    current = cJSON_GetObjectItem(json, "current");
+                    state = cJSON_GetObjectItem(current, "state");
                     desired = cJSON_GetObjectItem(state, "desired");
-                    status = cJSON_GetObjectItem(desired, "status")->valuestring;
-                    doorLock = cJSON_GetObjectItem(desired, "doorLock")->valuestring;
-
-                    debugMsg("status: ");
-                    debugMsg(status);
-                    debugMsg("\r\ndoorLock: ");
-                    debugMsg(doorLock);
+                    reported = cJSON_GetObjectItem(state, "reported");
                     debugMsg("\r\n");
+                    debugMsg(cJSON_Print(desired));
+                    debugMsg("\r\n");
+                    debugMsg(cJSON_Print(reported));
+                    debugMsg("\r\n");
+                    if(strcmp(cJSON_Print(desired) , cJSON_Print(reported)) != 0)
+                    {
+                        debugMsg("\r\n789798\r\n");
+                        status = cJSON_GetObjectItem(desired, "status")->valuestring;
+                        doorLock = cJSON_GetObjectItem(desired, "doorLock")->valuestring;
+                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", status, doorLock);
+                        debugMsg("status: ");
+                        debugMsg(status);
+                        debugMsg("\r\ndoorLock: ");
+                        debugMsg(doorLock);
+                        debugMsg("\r\n");
+                        root = cJSON_Parse(ShadowUpdateStr);
+                        out=cJSON_Print(root);
+                        //Send what data? Copy to msg (We will publish msg to Topic)
+                        strcpy(msg,out);
+                        //wiced_uart_transmit_bytes(WICED_UART_1 , msg , strlen(msg));
+                        wiced_rtos_set_semaphore( &wake_semaphore );
+                    }
                 }
                 else
                     debugMsg("\r\nNot desired request!!\r\n");
@@ -246,6 +270,7 @@ void receiveUART(wiced_thread_arg_t arg)
                     shadowSW = 1;
                 else
                     shadowSW = 0;
+                //shadowSW is used to choose shadow state
                 switch(shadowSW)
                 {
                     case 0:
@@ -432,6 +457,7 @@ void application_start()
     wiced_rtos_init_semaphore( &msg_semaphore );
     wiced_rtos_init_semaphore( &MQTTend_semaphore );
     sprintf(IotShadowTopic,(char *)WICED_TOPIC,IotThing);
+    sprintf(IotShadowDocumentTopic,(char *)Shadow_Document_TOPIC,IotThing);
 
     /*
      * Why do I use a while(1) here?
@@ -469,7 +495,7 @@ void application_start()
         debugMsg(("[MQTT] Subscribing to shadow Topic..."));
         do
         {
-            ret = mqtt_app_subscribe( mqtt_object, IotShadowTopic, WICED_MQTT_QOS_DELIVER_AT_MOST_ONCE );
+            ret = mqtt_app_subscribe( mqtt_object, IotShadowDocumentTopic, WICED_MQTT_QOS_DELIVER_AT_MOST_ONCE );
             retries++ ;
         } while ( ( ret != WICED_SUCCESS ) && ( retries < MQTT_SUBSCRIBE_RETRY_COUNT ) );
         if ( ret != WICED_SUCCESS )
