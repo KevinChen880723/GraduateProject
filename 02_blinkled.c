@@ -6,33 +6,28 @@
 #include "cJSON.h"
 #include "stdbool.h"
 
-/************************* User global variables *******************************************/
-char receiveData[20]="";
-static wiced_thread_t receiveUartHandle , PublishMessageHandle;
-char                  *msg = "Hello World!!";
-/*Use for Shadow*/
-char                  ShadowUpdateStr[100] = "";
-char                  *out;
-cJSON                 *root;
-cJSON *json, *current, *state, *desired, *reported;
-char *status="OFF", *doorLock="ON";
-char *JSON_temp;
-int shadowSW = 0;   //Use this variable to choose the data of shadow report
-
-/*Use for MQTT*/
-wiced_mqtt_object_t   mqtt_object;
-uint32_t              size_out = 0;
-int                   retries = 0;
-char                  *IotThing = "KEVIN_IoT_Thing";
-char                  IotShadowTopic[100] = "" , IotShadowDocumentTopic[100] = "" , *IotControlTopic = "Control";
-char                  *on = "ON", *off = "OFF";
-wiced_mqtt_topic_msg_t receivedMsg;
-bool shadowReceive_flag = false;
-
 /************************* User defines *******************************************/
 #define RX_BUFFER_SIZE 20
 #define RxDataSize 5
 #define ShadowUpdateMsg "{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }"
+#define RX_BUFFER_SIZE 20
+#define countMsgIn "count = %d\r\n"
+#define keyMsgIn "key = %c"
+
+#define WICED3 WICED_GPIO_28
+#define WICED4 WICED_GPIO_32
+#define WICED5 WICED_GPIO_29
+#define WICED6 WICED_GPIO_30
+#define RS      WICED4
+#define Enable  WICED5
+#define D4      ARD_GPIO0
+#define D5      ARD_GPIO1
+#define D6      ARD_GPIO2
+#define D7      ARD_GPIO3
+#define ARD_GPIO10 ARD_SS
+#define ARD_GPIO11 ARD_MOSI
+#define ARD_GPIO12 ARD_MISO
+#define ARD_GPIO13 ARD_SCK
 
 /************************* (Copy from publisher.c) *******************************************/
 #define MQTT_BROKER_ADDRESS                 "a21yyexai8eunn-ats.iot.us-east-1.amazonaws.com"
@@ -46,6 +41,43 @@ bool shadowReceive_flag = false;
 #define MQTT_PUBLISH_RETRY_COUNT            (3)
 #define MQTT_SUBSCRIBE_RETRY_COUNT          (3)
 /********************************************************************/
+
+/************************* User global variables *******************************************/
+char receiveData[20]="";
+static wiced_thread_t receiveUartHandle , PublishMessageHandle , PeripheralHandle;
+wiced_timer_t timer1_handle;
+char                  *msg = "Hello World!!";
+wiced_gpio_t writes[4] = {ARD_GPIO4,ARD_GPIO5,ARD_GPIO6,ARD_GPIO7};
+wiced_gpio_t reads[4] = {ARD_GPIO8,ARD_GPIO9,ARD_GPIO10,ARD_GPIO11};
+const char keymap[4][4] = {     // 設定按鍵的「行、列」代表值
+    {'*','0','#','D'},
+    {'7','8','9','C'},
+    {'4','5','6','B'},
+    {'1','2','3','A'}
+};
+int i = 0;
+
+
+/*Use for Shadow*/
+char                  ShadowUpdateStr[100] = "";
+char                  *out;
+cJSON                 *root;
+cJSON *json, *current, *state, *desired, *reported;
+char *status="OFF", *doorLock="ON";
+char *JSON_temp;
+int shadowSW = 0;   //Use this variable to choose the data of shadow report
+
+
+/*Use for MQTT*/
+wiced_mqtt_object_t   mqtt_object;
+uint32_t              size_out = 0;
+int                   retries = 0;
+char                  *IotThing = "KEVIN_IoT_Thing";
+char                  IotShadowTopic[100] = "" , IotShadowDocumentTopic[100] = "" , *IotControlTopic = "Control";
+char                  *on = "ON", *off = "OFF";
+wiced_mqtt_topic_msg_t receivedMsg;
+bool shadowReceive_flag = false;
+
 /******************************************************
  *               Variable Definitions (Copy from publisher.c)
  ******************************************************/
@@ -60,6 +92,175 @@ static wiced_bool_t                         is_connected = WICED_FALSE;
 /******************************************************
  *               Static Function Definitions
  ******************************************************/
+void send_to_lcd(char, int);
+void lcd_send_cmd (char);
+void lcd_send_data (char);
+void lcd_put_cur(int, int);
+void lcd_init (void);
+void string_ini(char*);
+void lcd_send_string (char *);
+void kevin_gpio_write(wiced_gpio_t,int);
+
+void kevin_gpio_write(wiced_gpio_t gpio, int logic)
+{
+    if(logic)
+        wiced_gpio_output_high( gpio );
+    else
+        wiced_gpio_output_low( gpio );
+}
+
+void setWrites(int a)
+{
+  for(i=0;i<4;i++)
+  {
+    if(i!=a)
+        kevin_gpio_write(writes[i],0);
+    else
+        kevin_gpio_write(writes[i],1);
+  }
+}
+
+void send_to_lcd(char data, int rs)
+{
+    kevin_gpio_write(RS, rs);
+    kevin_gpio_write(Enable, 1);
+
+    wiced_rtos_delay_milliseconds( 1 );
+
+    kevin_gpio_write(D7, (data>>3)&0x01);
+    kevin_gpio_write(D6, (data>>2)&0x01);
+    kevin_gpio_write(D5, (data>>1)&0x01);
+    kevin_gpio_write(D4, (data)&0x01);
+
+    //kevin_gpio_write(Enable, 1);
+    wiced_rtos_delay_milliseconds( 1 );
+
+    kevin_gpio_write(Enable, 0);
+    wiced_rtos_delay_milliseconds( 1 );
+}
+
+void lcd_send_cmd (char cmd)
+{
+    char datatosend;
+    // send upper nibble first
+    datatosend = ((cmd>>4)&0x0f);
+    send_to_lcd(datatosend,0);  // RS must be while sending command
+    // send Lower Nibble
+    datatosend = ((cmd)&0x0f);
+    send_to_lcd(datatosend, 0);
+}
+
+void lcd_send_data (char data)
+{
+    char datatosend;
+
+    // send higher nibble
+    datatosend = ((data>>4)&0x0f);
+    send_to_lcd(datatosend, 1);  // rs =1 for sending data
+    // send Lower nibble
+    datatosend = ((data)&0x0f);
+    send_to_lcd(datatosend, 1);
+}
+
+
+void lcd_put_cur(int row, int col)
+{
+    switch (row)
+    {
+        case 0:
+            col |= 0x80;
+            break;
+        case 1:
+            col |= 0xC0;
+            break;
+    }
+    lcd_send_cmd (col);
+}
+
+void lcd_init (void)
+{
+    // 4 bit initialisation
+    wiced_rtos_delay_milliseconds(50);  // wait for >40ms
+    lcd_send_cmd (0x30);
+    wiced_rtos_delay_milliseconds(5);  // wait for >4.1ms
+    lcd_send_cmd (0x30);
+    wiced_rtos_delay_milliseconds(1);  // wait for >100us
+    lcd_send_cmd (0x30);
+    wiced_rtos_delay_milliseconds(10);
+    lcd_send_cmd (0x20);  // 4bit mode
+    wiced_rtos_delay_milliseconds(10);
+
+  // dislay initialisation
+    lcd_send_cmd (0x28); // Function set --> DL=0 (4 bit mode), N = 1 (2 line display) F = 0 (5x8 characters)
+    wiced_rtos_delay_milliseconds(1);
+    lcd_send_cmd (0x08); //Display on/off control --> D=0,C=0, B=0  ---> display off
+    wiced_rtos_delay_milliseconds(1);
+    lcd_send_cmd (0x01);  // clear display
+    wiced_rtos_delay_milliseconds(1);
+    wiced_rtos_delay_milliseconds(1);
+    lcd_send_cmd (0x06); //Entry mode set --> I/D = 1 (increment cursor) & S = 0 (no shift)
+    wiced_rtos_delay_milliseconds(1);
+    lcd_send_cmd (0x0C); //Display on/off control --> D = 1, C and B = 0. (Cursor and blink, last two bits)
+    string_ini((char *)"        ");    //if I take these code out, LCD will
+    string_ini((char *)"        ");
+    string_ini((char *)"        ");
+}
+
+void string_ini(char *display_string)
+{
+  int length = strlen(display_string);
+  int i = 0;
+  int col = 0, row = 0;
+  for (i = 0 ; i < length ; i++)
+  {
+    lcd_put_cur(row , col);
+    lcd_send_data(display_string[i]);
+    col++;
+      if(col > 15)
+      {
+        row++;
+        col = 0;
+      }
+      if(row>1)
+      {
+        row = 0;
+      }
+  }
+}
+
+void lcd_send_string(char *display_string)
+{
+  int length = strlen(display_string);
+  int i = 0;
+  for (i = 0 ; i < length ; i++)
+  {
+    lcd_send_data(display_string[i]);
+  }
+}
+bool led_state = 0;
+int count = 0;
+void timer1Function(void *arg)
+{
+    if(count >= 100)
+    {
+        count = 0;
+        led_state = !led_state;
+        kevin_gpio_write(ARD_GPIO6, led_state);
+        kevin_gpio_write(ARD_GPIO7, led_state);
+        kevin_gpio_write(ARD_GPIO8, led_state);
+        kevin_gpio_write(ARD_GPIO9, led_state);
+        kevin_gpio_write(ARD_GPIO10, led_state);
+        kevin_gpio_write(ARD_GPIO11, led_state);
+        kevin_gpio_write(ARD_GPIO12, led_state);
+        kevin_gpio_write(ARD_GPIO13, led_state);
+    }
+    else
+    {
+        count++;
+    }
+
+}
+
 /*
  * A blocking call to an expected event.
  * 
@@ -255,6 +456,56 @@ static wiced_result_t mqtt_app_publish( wiced_mqtt_object_t mqtt_obj, uint8_t qo
 }
 
 /******************* User Function *********************************/
+void peripheralFunction(wiced_thread_arg_t arg)
+{
+
+    int i = 0;
+    int x,y;
+    bool readInput1 = 0, readInput2 = 0;
+    int count = 0;
+    char  countMsgOut[50];
+    while(1)
+    {
+        debugMsg("465\r\n");
+        kevin_gpio_write(ARD_GPIO12, 0);
+        kevin_gpio_write(ARD_GPIO12, 1);
+        wiced_rtos_delay_microseconds(20);
+        kevin_gpio_write(ARD_GPIO12, 0);
+        while(!wiced_gpio_input_get(ARD_GPIO13));
+        count = 0;
+        while(wiced_gpio_input_get(ARD_GPIO13))
+        {
+            count++;
+            wiced_rtos_delay_microseconds(1);
+        }
+        sprintf(countMsgOut, (char*)countMsgIn, count);
+        debugMsg(countMsgOut);
+
+       // wiced_rtos_delay_milliseconds(500);
+        for(x=0;x<4;x++)
+        {
+          for(y=0;y<4;y++)
+          {
+            setWrites(y);////
+            //digitalWrite(writes[x],1);
+            readInput2 = readInput1;
+            readInput1 = wiced_gpio_input_get(reads[x]);
+            if(readInput1 && !readInput2)
+            {
+              sprintf(countMsgOut, (char*)keyMsgIn, keymap[y][x]);
+              lcd_put_cur(0, 0);
+              lcd_send_cmd(0x01);
+              lcd_send_string(countMsgOut);
+              //
+              wiced_rtos_delay_milliseconds(300);
+              //readInput = 0;
+              break;
+            }
+          }
+        }
+    }
+}
+
 
 void receiveUART(wiced_thread_arg_t arg)
 {
@@ -365,9 +616,27 @@ void debugMsg(char debugMessage[50])
 void application_start()
 {
     wiced_result_t        ret = WICED_SUCCESS;
-    int                   connection_retries = 0;
+    int                   connection_retries = 0, i = 0;
 
     wiced_init();
+
+    for(i=0;i<4;i++)
+    {
+      wiced_gpio_init(writes[i],OUTPUT_PUSH_PULL);
+      wiced_gpio_init(reads[i],INPUT_PULL_UP);
+      kevin_gpio_write(writes[3],0);
+    }
+    wiced_gpio_init(ARD_GPIO0, OUTPUT_PUSH_PULL);
+    wiced_gpio_init(ARD_GPIO1, OUTPUT_PUSH_PULL);
+    wiced_gpio_init(ARD_GPIO2, OUTPUT_PUSH_PULL);
+    wiced_gpio_init(ARD_GPIO3, OUTPUT_PUSH_PULL);
+    wiced_gpio_init(WICED3, OUTPUT_PUSH_PULL);
+    wiced_gpio_init(WICED4, OUTPUT_PUSH_PULL);
+    wiced_gpio_init(WICED5, OUTPUT_PUSH_PULL);
+    wiced_gpio_init(WICED6, OUTPUT_PUSH_PULL);
+    wiced_gpio_init(ARD_GPIO12 , OUTPUT_PUSH_PULL);
+    wiced_gpio_init(ARD_GPIO13 , INPUT_PULL_UP);
+   // wiced_gpio_init(ARD_GPIO11 , OUTPUT_PUSH_PULL);
 
     //Customize UART
     wiced_uart_config_t uart_config=
@@ -378,6 +647,12 @@ void application_start()
             .flow_control = FLOW_CONTROL_DISABLED
     };
 
+    //Initialize LCD
+    lcd_init();
+    lcd_put_cur(0, 0);
+    lcd_send_cmd(0x01);
+    lcd_send_string("Hello world!!");
+
     //Create a buffer for UART rx data, then initial UART3, which is routed to P6:38(RX)�BP6:39(TX)
     wiced_ring_buffer_t rx_buffer;
     uint8_t rx_data[RX_BUFFER_SIZE];
@@ -387,6 +662,7 @@ void application_start()
     //Initial UART1, this is use for debugging
     wiced_uart_init(WICED_UART_1,&uart_config,NULL);
     debugMsg("Application start\r\n");
+
     /* 
      * Get AWS root certificate, client certificate and private key respectively 
      * So we can safely connect to AWS IoT core by using MQTT in future steps
@@ -458,6 +734,8 @@ void application_start()
     wiced_rtos_init_semaphore( &MQTTend_semaphore );
     sprintf(IotShadowTopic,(char *)WICED_TOPIC,IotThing);
     sprintf(IotShadowDocumentTopic,(char *)Shadow_Document_TOPIC,IotThing);
+    wiced_rtos_init_timer(&timer1_handle, 1, timer1Function, NULL);
+    wiced_rtos_start_timer(&timer1_handle);
 
     /*
      * Why do I use a while(1) here?
@@ -528,7 +806,21 @@ void application_start()
         wiced_rtos_create_thread(&PublishMessageHandle,9,"PublishMessageThread",PublishMessage,1024,NULL);
         //Start to run RX function
         wiced_rtos_create_thread(&receiveUartHandle,10,"UartRxThread",receiveUART,1024,NULL);
+        //Start to run RX function
+        wiced_rtos_create_thread(&PeripheralHandle,11,"PeripheralFunctionThread",peripheralFunction,1024,NULL);
 
+        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", status, doorLock);
+        debugMsg("status: ");
+        debugMsg(status);
+        debugMsg("\r\ndoorLock: ");
+        debugMsg(doorLock);
+        debugMsg("\r\n");
+        root = cJSON_Parse(ShadowUpdateStr);
+        out=cJSON_Print(root);
+        //Send what data? Copy to msg (We will publish msg to Topic)
+        strcpy(msg,out);
+        //wiced_uart_transmit_bytes(WICED_UART_1 , msg , strlen(msg));
+        wiced_rtos_set_semaphore( &wake_semaphore );
         //When MQTT disconnected (before MQTT disconnect, this thread will suspend)
         wiced_rtos_get_semaphore( &MQTTend_semaphore,WICED_WAIT_FOREVER );
 
