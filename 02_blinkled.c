@@ -9,7 +9,7 @@
 /************************* User defines *******************************************/
 #define RX_BUFFER_SIZE 20
 #define RxDataSize 5
-#define ShadowUpdateMsg "{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }"
+#define ShadowUpdateMsg "{ \"state\": {\"reported\": { \"managerPassword\": \"%s\" , \"customerPassword\":\"%s\"} } }"
 #define RX_BUFFER_SIZE 20
 #define countMsgIn "count = %d\r\n"
 #define keyMsgIn "key = %c"
@@ -49,11 +49,11 @@ wiced_timer_t timer1_handle;
 char                  *msg = "Hello World!!";
 wiced_gpio_t writes[4] = {ARD_GPIO4,ARD_GPIO5,ARD_GPIO6,ARD_GPIO7};
 wiced_gpio_t reads[4] = {ARD_GPIO8,ARD_GPIO9,ARD_GPIO10,ARD_GPIO11};
-const char keymap[4][4] = {     // 設定按鍵的「行、列」代表值
-    {'*','0','#','D'},
-    {'7','8','9','C'},
+char keymap[4][4] = {     // 設定按鍵的「行、列」代表值
+    {'D','*','0','E'},
+    {'1','2','3','C'},
     {'4','5','6','B'},
-    {'1','2','3','A'}
+    {'7','8','9','A'}
 };
 int i = 0;
 
@@ -63,10 +63,16 @@ char                  ShadowUpdateStr[100] = "";
 char                  *out;
 cJSON                 *root;
 cJSON *json, *current, *state, *desired, *reported;
-char *status="OFF", *doorLock="ON";
+
 char *JSON_temp;
 int shadowSW = 0;   //Use this variable to choose the data of shadow report
 
+//Used for keyboard
+char *managerPassword, *customerPassword, *enterPassword;
+int keyState = -1;  //type different function, it will change to correspond state
+int pwCnt = 0;  //Used when typing password
+int cmpState = 0, ccpState = 0;
+bool first = true;
 
 /*Use for MQTT*/
 wiced_mqtt_object_t   mqtt_object;
@@ -100,6 +106,11 @@ void lcd_init (void);
 void string_ini(char*);
 void lcd_send_string (char *);
 void kevin_gpio_write(wiced_gpio_t,int);
+void passwordInit(char*, char*);
+void passwordDeinit(void);
+void passwordHandle(char);
+void reportShadow(char *, char *);
+void desireShadow(char *, char *);
 
 void kevin_gpio_write(wiced_gpio_t gpio, int logic)
 {
@@ -109,6 +120,272 @@ void kevin_gpio_write(wiced_gpio_t gpio, int logic)
         wiced_gpio_output_low( gpio );
 }
 
+
+
+#define enterOldPassword 0
+#define enterNewPassword 1
+#define cmp 0
+#define ccp 1
+#define emp 2
+#define ecp 3
+
+/*
+ * Used for initialize the variables that used in passwordHandle
+ */
+void passwordInit(char *mpInit, char *cpInit)
+{
+    managerPassword = (char *)malloc(sizeof(char)*100);
+    strcpy(managerPassword, mpInit);
+    customerPassword = (char *)malloc(sizeof(char)*100);
+    strcpy(customerPassword, cpInit);
+    enterPassword = (char *)malloc(sizeof(char)*100);
+    strcpy(enterPassword, (char*)"");
+}
+
+void passwordDeinit()
+{
+    free(managerPassword);
+    free(customerPassword);
+    free(enterPassword);
+}
+
+/*
+ * This function is used to change/enter password
+ * Every time user press any key on the keypad, call this function
+ */
+void passwordHandle(char key)
+{
+    switch(key)
+    {
+        case 'A':   //change manager's password
+            keyState = cmp;
+            lcd_send_cmd(0x01);
+            lcd_put_cur(0, 0);
+            lcd_send_string("Old password:");
+            lcd_put_cur(1, 0);
+            pwCnt = 0;
+            cmpState = enterOldPassword;
+            break;
+        case 'B':   //change customer's password
+            keyState = ccp;
+            if(strcmp(customerPassword, "") == 0)
+            {
+                ccpState = enterNewPassword;
+                lcd_send_cmd(0x01);
+                lcd_put_cur(0, 0);
+                lcd_send_string("Set password:");
+                lcd_put_cur(1, 0);
+                pwCnt = 0;
+            }
+            else
+            {
+                ccpState = enterOldPassword;
+                lcd_send_cmd(0x01);
+                lcd_put_cur(0, 0);
+                lcd_send_string("Old password:");
+                lcd_put_cur(1, 0);
+                pwCnt = 0;
+            }
+            break;
+        case 'C':   //enter manager's password
+            keyState = emp;
+            lcd_send_cmd(0x01);
+            lcd_put_cur(0, 0);
+            lcd_send_string("manager password");
+            lcd_put_cur(1, 0);
+            pwCnt = 0;
+            break;
+        case 'D':   //Open the lid of the washing machine(If there has password then check, if not then open)
+            if(strcmp(customerPassword, "") == 0)
+            {
+                lcd_send_cmd(0x01);
+                lcd_put_cur(0, 0);
+                lcd_send_string("The lid");
+                lcd_put_cur(1, 0);
+                lcd_send_string("is opened!");
+                cmpState = enterOldPassword;
+                pwCnt = 0;
+                //Open the lid
+            }
+            else
+            {
+                keyState = ecp;
+                lcd_send_cmd(0x01);
+                lcd_put_cur(0, 0);
+                lcd_send_string("Enter password:");
+                lcd_put_cur(1, 0);
+                pwCnt = 0;
+            }
+            break;
+        case 'E':   //Maybe should move to default, if key != 'E' then keep adding char to variable
+            switch(keyState)
+            {
+                case cmp:
+                    if(cmpState == enterOldPassword)
+                    {
+                        if(strcmp(enterPassword, managerPassword) == 0)
+                        {
+                            cmpState = enterNewPassword;
+                            lcd_send_cmd(0x01);
+                            lcd_put_cur(0, 0);
+                            lcd_send_string("New password:");
+                            lcd_put_cur(1, 0);
+                        }
+                        else
+                        {
+                            lcd_send_cmd(0x01);
+                            lcd_put_cur(0, 0);
+                            lcd_send_string("Password wrong!");
+                            keyState = -1;
+                            wiced_rtos_delay_milliseconds(1000);
+                            lcd_send_cmd(0x01);
+                        }
+                    }
+                    else
+                    {
+                        lcd_send_cmd(0x01);
+                        lcd_put_cur(0, 0);
+                        lcd_send_string("Password changed");
+                        keyState = -1;
+                        cmpState = enterOldPassword;
+                        wiced_rtos_delay_milliseconds(1000);
+                        lcd_send_cmd(0x01);
+                        desireShadow(managerPassword, customerPassword);
+                    }
+                    break;
+                case ccp:
+                    if(ccpState == enterOldPassword)
+                    {
+                        if(strcmp(enterPassword, customerPassword) == 0)
+                        {
+                            ccpState = enterNewPassword;
+                            lcd_send_cmd(0x01);
+                            lcd_put_cur(0, 0);
+                            lcd_send_string("New password:");
+                            lcd_put_cur(1, 0);
+                        }
+                        else
+                        {
+                            lcd_send_cmd(0x01);
+                            lcd_put_cur(0, 0);
+                            lcd_send_string("Password wrong!");
+                            keyState = -1;
+                            wiced_rtos_delay_milliseconds(1000);
+                            lcd_send_cmd(0x01);
+                        }
+                    }
+                    else
+                    {
+                        lcd_send_cmd(0x01);
+                        lcd_put_cur(0, 0);
+                        lcd_send_string("Password changed!!");
+                        keyState = -1;
+                        cmpState = enterOldPassword;
+                        wiced_rtos_delay_milliseconds(1000);
+                        lcd_send_cmd(0x01);
+                        desireShadow(managerPassword, customerPassword);
+                    }
+                    break;
+                case emp:
+                    if(strcmp(enterPassword, managerPassword) == 0)
+                    {
+                        lcd_send_cmd(0x01);
+                        lcd_put_cur(0, 0);
+                        lcd_send_string("Password correct");
+                        wiced_rtos_delay_milliseconds(1000);
+                        lcd_send_cmd(0x01);
+                        //Set verify variable as true
+                    }
+                    else
+                    {
+                        lcd_send_cmd(0x01);
+                        lcd_put_cur(0, 0);
+                        lcd_send_string("Password wrong");
+                        wiced_rtos_delay_milliseconds(1000);
+                        lcd_send_cmd(0x01);
+                    }
+                    keyState = -1;
+                    break;
+                case ecp:
+                    if(strcmp(enterPassword, customerPassword) == 0)
+                    {
+                        lcd_send_cmd(0x01);
+                        lcd_put_cur(0, 0);
+                        lcd_send_string("The lid");
+                        wiced_rtos_delay_milliseconds(1000);
+                        lcd_put_cur(0, 0);
+                        lcd_send_string("is opened!");
+                        //Open the lid
+                        strcpy(customerPassword, "");
+                        wiced_rtos_delay_milliseconds(1000);
+                        lcd_send_cmd(0x01);
+                        desireShadow(managerPassword, customerPassword);
+                    }
+                    else
+                    {
+                        lcd_send_cmd(0x01);
+                        lcd_put_cur(0, 0);
+                        lcd_send_string("Password wrong");
+                        wiced_rtos_delay_milliseconds(1000);
+                        lcd_send_cmd(0x01);
+                    }
+                    keyState = -1;
+                    break;
+            }
+            pwCnt = 0;
+            break;
+        default:    //If enter 0~9 or '#'
+            switch(keyState)
+            {
+                case cmp:   //change manager's password
+                    switch(cmpState)
+                    {
+                        case enterOldPassword:
+                            lcd_send_data(key);
+                            enterPassword[pwCnt] = key;
+                            enterPassword[pwCnt+1] = '\0';
+                            break;
+                        case enterNewPassword:
+                            lcd_send_data('*');
+                            managerPassword[pwCnt] = key;
+                            managerPassword[pwCnt+1] = '\0';
+                            break;
+                    }
+                    break;
+                case ccp:   //change customer's password
+                    switch(ccpState)
+                    {
+                        case enterOldPassword:
+                            lcd_send_data(key);
+                            enterPassword[pwCnt] = key;
+                            enterPassword[pwCnt+1] = '\0';
+                            break;
+                        case enterNewPassword:
+                            lcd_send_data('*');
+                            customerPassword[pwCnt] = key;
+                            customerPassword[pwCnt+1] = '\0';
+                            break;
+                    }
+                    break;
+                case emp:   //enter manager's password
+                    lcd_send_data('*');
+                    enterPassword[pwCnt] = key;
+                    enterPassword[pwCnt+1] = '\0';
+                    break;
+                case ecp:
+                    lcd_send_data('*');
+                    enterPassword[pwCnt] = key;
+                    enterPassword[pwCnt+1] = '\0';
+                    break;
+            }
+            pwCnt++;
+            break;
+    }
+}
+
+/*
+ * Used for 4*4 keypad, one time set one pin HIGH
+ */
 void setWrites(int a)
 {
   for(i=0;i<4;i++)
@@ -125,7 +402,7 @@ void send_to_lcd(char data, int rs)
     kevin_gpio_write(RS, rs);
     kevin_gpio_write(Enable, 1);
 
-    wiced_rtos_delay_milliseconds( 1 );
+    //wiced_rtos_delay_microseconds( 1000 );
 
     kevin_gpio_write(D7, (data>>3)&0x01);
     kevin_gpio_write(D6, (data>>2)&0x01);
@@ -133,10 +410,10 @@ void send_to_lcd(char data, int rs)
     kevin_gpio_write(D4, (data)&0x01);
 
     //kevin_gpio_write(Enable, 1);
-    wiced_rtos_delay_milliseconds( 1 );
+    wiced_rtos_delay_microseconds( 1000 );
 
     kevin_gpio_write(Enable, 0);
-    wiced_rtos_delay_milliseconds( 1 );
+    wiced_rtos_delay_microseconds( 1000 );
 }
 
 void lcd_send_cmd (char cmd)
@@ -237,33 +514,18 @@ void lcd_send_string(char *display_string)
     lcd_send_data(display_string[i]);
   }
 }
-bool led_state = 0;
-int count = 0;
+
+/*
+ * Every 1 mS, this function will be executed one time
+ */
 void timer1Function(void *arg)
 {
-    if(count >= 100)
-    {
-        count = 0;
-        led_state = !led_state;
-        kevin_gpio_write(ARD_GPIO6, led_state);
-        kevin_gpio_write(ARD_GPIO7, led_state);
-        kevin_gpio_write(ARD_GPIO8, led_state);
-        kevin_gpio_write(ARD_GPIO9, led_state);
-        kevin_gpio_write(ARD_GPIO10, led_state);
-        kevin_gpio_write(ARD_GPIO11, led_state);
-        kevin_gpio_write(ARD_GPIO12, led_state);
-        kevin_gpio_write(ARD_GPIO13, led_state);
-    }
-    else
-    {
-        count++;
-    }
 
 }
 
 /*
  * A blocking call to an expected event.
- * 
+ * Check the result of MQTT is as our expected or not
  */
 static wiced_result_t wait_for_response( wiced_mqtt_event_type_t event, uint32_t timeout )
 {
@@ -313,11 +575,10 @@ static wiced_result_t mqtt_connection_event_cb( wiced_mqtt_object_t mqtt_object,
             debugMsg("\r\n");
             debugMsg(receivedMsg.topic);
             debugMsg("\r\n");
-            debugMsg("46546\r\n");
             if(strncmp((char *)receivedMsg.topic, IotShadowDocumentTopic, receivedMsg.topic_len) == 0)
             {
 
-                if(strstr(JSON_temp,"desired") != NULL)
+                if(strstr(JSON_temp,"desired") != NULL )
                 {
                     json = cJSON_Parse(JSON_temp);
                     current = cJSON_GetObjectItem(json, "current");
@@ -329,23 +590,16 @@ static wiced_result_t mqtt_connection_event_cb( wiced_mqtt_object_t mqtt_object,
                     debugMsg("\r\n");
                     debugMsg(cJSON_Print(reported));
                     debugMsg("\r\n");
+
+                    //If the desired data and reported data are different, do below actions
                     if(strcmp(cJSON_Print(desired) , cJSON_Print(reported)) != 0)
                     {
                         debugMsg("\r\n789798\r\n");
-                        status = cJSON_GetObjectItem(desired, "status")->valuestring;
-                        doorLock = cJSON_GetObjectItem(desired, "doorLock")->valuestring;
-                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", status, doorLock);
-                        debugMsg("status: ");
-                        debugMsg(status);
-                        debugMsg("\r\ndoorLock: ");
-                        debugMsg(doorLock);
-                        debugMsg("\r\n");
-                        root = cJSON_Parse(ShadowUpdateStr);
-                        out=cJSON_Print(root);
-                        //Send what data? Copy to msg (We will publish msg to Topic)
-                        strcpy(msg,out);
-                        //wiced_uart_transmit_bytes(WICED_UART_1 , msg , strlen(msg));
-                        wiced_rtos_set_semaphore( &wake_semaphore );
+
+                        //Update the password variables value, then update the shadow
+                        managerPassword = cJSON_GetObjectItem(desired, "managerPassword")->valuestring;
+                        customerPassword = cJSON_GetObjectItem(desired, "customerPassword")->valuestring;
+                        reportShadow(managerPassword, customerPassword);
                     }
                 }
                 else
@@ -466,7 +720,6 @@ void peripheralFunction(wiced_thread_arg_t arg)
     char  countMsgOut[50];
     while(1)
     {
-        debugMsg("465\r\n");
         kevin_gpio_write(ARD_GPIO12, 0);
         kevin_gpio_write(ARD_GPIO12, 1);
         wiced_rtos_delay_microseconds(20);
@@ -492,10 +745,15 @@ void peripheralFunction(wiced_thread_arg_t arg)
             readInput1 = wiced_gpio_input_get(reads[x]);
             if(readInput1 && !readInput2)
             {
-              sprintf(countMsgOut, (char*)keyMsgIn, keymap[y][x]);
-              lcd_put_cur(0, 0);
-              lcd_send_cmd(0x01);
-              lcd_send_string(countMsgOut);
+                if(first == true)
+                {
+                    first = false;
+                }
+                else
+                {
+                    passwordHandle(keymap[y][x]);
+                }
+
               //
               wiced_rtos_delay_milliseconds(300);
               //readInput = 0;
@@ -525,16 +783,16 @@ void receiveUART(wiced_thread_arg_t arg)
                 switch(shadowSW)
                 {
                     case 0:
-                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", off, off);
+                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"managerPassword\": \"%s\" , \"customerPassword\":\"%s\"} } }", off, off);
                         break;
                     case 1:
-                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", off, on);
+                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"managerPassword\": \"%s\" , \"customerPassword\":\"%s\"} } }", off, on);
                         break;
                     case 2:
-                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", on, off);
+                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"managerPassword\": \"%s\" , \"customerPassword\":\"%s\"} } }", on, off);
                         break;
                     case 3:
-                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", on, on);
+                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"managerPassword\": \"%s\" , \"customerPassword\":\"%s\"} } }", on, on);
                         break;
                     default:
                         break;
@@ -610,6 +868,26 @@ void debugMsg(char debugMessage[50])
     wiced_uart_transmit_bytes(WICED_UART_1 , debugMessage , strlen(debugMessage));
 }
 
+void reportShadow(char *managerPasswords, char *customerPasswords)
+{
+    sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"managerPassword\": \"%s\" , \"customerPassword\":\"%s\"} } }", managerPasswords, customerPasswords);
+    root = cJSON_Parse(ShadowUpdateStr);
+    out=cJSON_Print(root);
+    //Send what data? Copy to msg (We will publish msg to Topic)
+    strcpy(msg,out);
+    wiced_rtos_set_semaphore( &wake_semaphore );
+}
+
+void desireShadow(char *managerPasswords, char *customerPasswords)
+{
+    sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"desired\": { \"managerPassword\": \"%s\" , \"customerPassword\":\"%s\"} } }", managerPasswords, customerPasswords);
+    root = cJSON_Parse(ShadowUpdateStr);
+    out=cJSON_Print(root);
+    //Send what data? Copy to msg (We will publish msg to Topic)
+    strcpy(msg,out);
+    wiced_rtos_set_semaphore( &wake_semaphore );
+}
+
 /*
  *  main function
  */
@@ -619,6 +897,8 @@ void application_start()
     int                   connection_retries = 0, i = 0;
 
     wiced_init();
+
+    passwordInit((char*)"880723", (char*)"");
 
     for(i=0;i<4;i++)
     {
@@ -806,21 +1086,14 @@ void application_start()
         wiced_rtos_create_thread(&PublishMessageHandle,9,"PublishMessageThread",PublishMessage,1024,NULL);
         //Start to run RX function
         wiced_rtos_create_thread(&receiveUartHandle,10,"UartRxThread",receiveUART,1024,NULL);
-        //Start to run RX function
+        //Start to run peripheral function( Handle 4*4 keypad, ultra sound sensor)
         wiced_rtos_create_thread(&PeripheralHandle,11,"PeripheralFunctionThread",peripheralFunction,1024,NULL);
 
-        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"status\": \"%s\" , \"doorLock\":\"%s\"} } }", status, doorLock);
-        debugMsg("status: ");
-        debugMsg(status);
-        debugMsg("\r\ndoorLock: ");
-        debugMsg(doorLock);
-        debugMsg("\r\n");
-        root = cJSON_Parse(ShadowUpdateStr);
-        out=cJSON_Print(root);
-        //Send what data? Copy to msg (We will publish msg to Topic)
-        strcpy(msg,out);
+        //Every time turn on the board, update the shadow
+        //(If reported data are not same as desired data, then update reported data and relative variables)
+        reportShadow(managerPassword, customerPassword);
         //wiced_uart_transmit_bytes(WICED_UART_1 , msg , strlen(msg));
-        wiced_rtos_set_semaphore( &wake_semaphore );
+
         //When MQTT disconnected (before MQTT disconnect, this thread will suspend)
         wiced_rtos_get_semaphore( &MQTTend_semaphore,WICED_WAIT_FOREVER );
 
