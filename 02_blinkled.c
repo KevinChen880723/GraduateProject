@@ -29,6 +29,13 @@
 #define ARD_GPIO12 ARD_MISO
 #define ARD_GPIO13 ARD_SCK
 
+#define enterOldPassword 0
+#define enterNewPassword 1
+#define cmp 0
+#define ccp 1
+#define emp 2
+#define ecp 3
+
 /************************* (Copy from publisher.c) *******************************************/
 #define MQTT_BROKER_ADDRESS                 "a21yyexai8eunn-ats.iot.us-east-1.amazonaws.com"
 #define MQTT_BROKER_PEER_COMMON_NAME        "*.iot.us-east-1.amazonaws.com"
@@ -72,7 +79,7 @@ char *managerPassword, *customerPassword, *enterPassword;
 int keyState = -1;  //type different function, it will change to correspond state
 int pwCnt = 0;  //Used when typing password
 int cmpState = 0, ccpState = 0;
-bool first = true;
+bool first = true;  //Avoid first time keyboard automatically type 'D'
 
 /*Use for MQTT*/
 wiced_mqtt_object_t   mqtt_object;
@@ -108,7 +115,7 @@ void lcd_send_string (char *);
 void kevin_gpio_write(wiced_gpio_t,int);
 void passwordInit(char*, char*);
 void passwordDeinit(void);
-void passwordHandle(char);
+void passwordHandle(char, bool *);
 void reportShadow(char *, char *);
 void desireShadow(char *, char *);
 
@@ -119,15 +126,6 @@ void kevin_gpio_write(wiced_gpio_t gpio, int logic)
     else
         wiced_gpio_output_low( gpio );
 }
-
-
-
-#define enterOldPassword 0
-#define enterNewPassword 1
-#define cmp 0
-#define ccp 1
-#define emp 2
-#define ecp 3
 
 /*
  * Used for initialize the variables that used in passwordHandle
@@ -153,7 +151,7 @@ void passwordDeinit()
  * This function is used to change/enter password
  * Every time user press any key on the keypad, call this function
  */
-void passwordHandle(char key)
+void passwordHandle(char key, bool *managerPasswordOk)
 {
     switch(key)
     {
@@ -165,6 +163,7 @@ void passwordHandle(char key)
             lcd_put_cur(1, 0);
             pwCnt = 0;
             cmpState = enterOldPassword;
+            *managerPasswordOk = false;
             break;
         case 'B':   //change customer's password
             keyState = ccp;
@@ -186,6 +185,7 @@ void passwordHandle(char key)
                 lcd_put_cur(1, 0);
                 pwCnt = 0;
             }
+            *managerPasswordOk = false;
             break;
         case 'C':   //enter manager's password
             keyState = emp;
@@ -194,6 +194,7 @@ void passwordHandle(char key)
             lcd_send_string("manager password");
             lcd_put_cur(1, 0);
             pwCnt = 0;
+            *managerPasswordOk = false;
             break;
         case 'D':   //Open the lid of the washing machine(If there has password then check, if not then open)
             if(strcmp(customerPassword, "") == 0)
@@ -216,6 +217,7 @@ void passwordHandle(char key)
                 lcd_put_cur(1, 0);
                 pwCnt = 0;
             }
+            *managerPasswordOk = false;
             break;
         case 'E':   //Maybe should move to default, if key != 'E' then keep adding char to variable
             switch(keyState)
@@ -272,6 +274,7 @@ void passwordHandle(char key)
                             keyState = -1;
                             wiced_rtos_delay_milliseconds(1000);
                             lcd_send_cmd(0x01);
+                            enterPassword[0] = '\0';
                         }
                     }
                     else
@@ -294,7 +297,16 @@ void passwordHandle(char key)
                         lcd_send_string("Password correct");
                         wiced_rtos_delay_milliseconds(1000);
                         lcd_send_cmd(0x01);
-                        //Set verify variable as true
+                        lcd_put_cur(0, 0);
+                        lcd_send_string("You can open the");
+                        wiced_rtos_delay_milliseconds(1000);
+                        lcd_send_cmd(0x01);
+                        lcd_put_cur(0, 0);
+                        lcd_send_string("money box in 60S");
+                        wiced_rtos_delay_milliseconds(1000);
+                        lcd_send_cmd(0x01);
+                        *managerPasswordOk = true;  //Verify successfully
+                        enterPassword[0] = '\0';
                     }
                     else
                     {
@@ -303,6 +315,7 @@ void passwordHandle(char key)
                         lcd_send_string("Password wrong");
                         wiced_rtos_delay_milliseconds(1000);
                         lcd_send_cmd(0x01);
+                        enterPassword[0] = '\0';
                     }
                     keyState = -1;
                     break;
@@ -320,6 +333,7 @@ void passwordHandle(char key)
                         wiced_rtos_delay_milliseconds(1000);
                         lcd_send_cmd(0x01);
                         desireShadow(managerPassword, customerPassword);
+                        enterPassword[0] = '\0';
                     }
                     else
                     {
@@ -328,6 +342,7 @@ void passwordHandle(char key)
                         lcd_send_string("Password wrong");
                         wiced_rtos_delay_milliseconds(1000);
                         lcd_send_cmd(0x01);
+                        enterPassword[0] = '\0';
                     }
                     keyState = -1;
                     break;
@@ -716,8 +731,13 @@ void peripheralFunction(wiced_thread_arg_t arg)
     int i = 0;
     int x,y;
     bool readInput1 = 0, readInput2 = 0;
-    int count = 0;
+    int count = 0, lastCount = 0;
     char  countMsgOut[50];
+    bool managerPasswordOk = false;
+    int timeCount = 0, time = 0;
+    char *displayTime;
+    displayTime = (char*)malloc(sizeof(char)*16);
+
     while(1)
     {
         kevin_gpio_write(ARD_GPIO12, 0);
@@ -731,16 +751,37 @@ void peripheralFunction(wiced_thread_arg_t arg)
             count++;
             wiced_rtos_delay_microseconds(1);
         }
+        if(count > lastCount*10)
+        {
+            if(managerPasswordOk == false)
+            {
+                //Give alarm message
+                lcd_send_cmd(0x01);
+                lcd_put_cur(0, 0);
+                lcd_send_string("Alarm!!!!");
+                wiced_rtos_delay_milliseconds(2000);
+                lcd_send_cmd(0x01);
+                managerPasswordOk = false;
+            }
+            else
+            {
+                lcd_send_cmd(0x01);
+                lcd_put_cur(0, 0);
+                lcd_send_string("The door is open");
+                wiced_rtos_delay_milliseconds(2000);
+                lcd_send_cmd(0x01);
+                managerPasswordOk = false;
+            }
+        }
+        lastCount = count;
         sprintf(countMsgOut, (char*)countMsgIn, count);
         debugMsg(countMsgOut);
 
-       // wiced_rtos_delay_milliseconds(500);
         for(x=0;x<4;x++)
         {
           for(y=0;y<4;y++)
           {
-            setWrites(y);////
-            //digitalWrite(writes[x],1);
+            setWrites(y);
             readInput2 = readInput1;
             readInput1 = wiced_gpio_input_get(reads[x]);
             if(readInput1 && !readInput2)
@@ -751,16 +792,51 @@ void peripheralFunction(wiced_thread_arg_t arg)
                 }
                 else
                 {
-                    passwordHandle(keymap[y][x]);
+                    passwordHandle(keymap[y][x], &managerPasswordOk);
                 }
-
-              //
               wiced_rtos_delay_milliseconds(300);
               //readInput = 0;
               break;
             }
           }
         }
+        if(managerPasswordOk == true)
+        {
+            debugMsg("12347\r\n");
+            if(timeCount == 100)
+            {
+                if(time > 60)
+                {
+                    time = 0;
+                    managerPasswordOk = false;
+                    lcd_send_cmd(0x01);
+                    lcd_put_cur(0, 0);
+                    lcd_send_string("Times up!!");
+                    wiced_rtos_delay_milliseconds(1000);
+                    lcd_send_cmd(0x01);
+                }
+                else
+                {
+                    time++;
+                    sprintf(displayTime, "Time: %d   ", time);
+                    lcd_send_cmd(0x01);
+                    lcd_put_cur(0, 0);
+                    lcd_send_string(displayTime);
+                }
+                timeCount = 0;
+            }
+            else
+            {
+                timeCount++;
+            }
+        }
+        else
+        {
+            debugMsg("45600\r\n");
+            time = 0;
+            timeCount = 0;
+        }
+        wiced_rtos_delay_milliseconds(10);
     }
 }
 
