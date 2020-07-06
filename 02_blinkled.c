@@ -18,6 +18,8 @@
 #define WICED4 WICED_GPIO_32
 #define WICED5 WICED_GPIO_29
 #define WICED6 WICED_GPIO_30
+#define WICED29 WICED_GPIO_34   //12
+#define WICED27 WICED_GPIO_35   //13
 #define RS      WICED4
 #define Enable  WICED5
 #define D4      ARD_GPIO0
@@ -50,7 +52,6 @@
 /********************************************************************/
 
 /************************* User global variables *******************************************/
-char receiveData[20]="";
 static wiced_thread_t receiveUartHandle , PublishMessageHandle , PeripheralHandle;
 wiced_timer_t timer1_handle;
 char                  *msg = "Hello World!!";
@@ -88,8 +89,19 @@ int                   retries = 0;
 char                  *IotThing = "KEVIN_IoT_Thing";
 char                  IotShadowTopic[100] = "" , IotShadowDocumentTopic[100] = "" , *IotControlTopic = "Control";
 char                  *on = "ON", *off = "OFF";
+char                  *mqttTopic;
 wiced_mqtt_topic_msg_t receivedMsg;
 bool shadowReceive_flag = false;
+
+/*Used for calling API*/
+enum APIType {
+        MACHINE_STATUS,
+        WATER_LEVEL,
+        CHECK_ERROR,
+        GET_WASHING_TIME,
+        WASHING_STATUS
+};
+bool checkMySelf = false, getWashingTime = false, checkWashingStatus = false;
 
 /******************************************************
  *               Variable Definitions (Copy from publisher.c)
@@ -106,6 +118,7 @@ static wiced_bool_t                         is_connected = WICED_FALSE;
  *               Static Function Definitions
  ******************************************************/
 void send_to_lcd(char, int);
+void debugMsg(char [50]);
 void lcd_send_cmd (char);
 void lcd_send_data (char);
 void lcd_put_cur(int, int);
@@ -118,6 +131,8 @@ void passwordDeinit(void);
 void passwordHandle(char, bool *);
 void reportShadow(char *, char *);
 void desireShadow(char *, char *);
+void mqttControl(char *);
+void callWashingMachineAPI(enum APIType);
 
 void kevin_gpio_write(wiced_gpio_t gpio, int logic)
 {
@@ -349,7 +364,12 @@ void passwordHandle(char key, bool *managerPasswordOk)
             }
             pwCnt = 0;
             break;
-        default:    //If enter 0~9 or '#'
+        case '*':   //Self checking
+        {
+            checkMySelf = true;
+            break;
+        }
+        default:    //If enter 0~9
             switch(keyState)
             {
                 case cmp:   //change manager's password
@@ -582,14 +602,15 @@ static wiced_result_t mqtt_connection_event_cb( wiced_mqtt_object_t mqtt_object,
             break;
         case WICED_MQTT_EVENT_TYPE_PUBLISH_MSG_RECEIVED:
         {
+            debugMsg("\r\nReceived MQTT Data\r\n");
             receivedMsg = event->data.pub_recvd;
 
             JSON_temp = (char*)receivedMsg.data;
             JSON_temp[receivedMsg.data_len] = '\0';
-            debugMsg(IotShadowDocumentTopic);
-            debugMsg("\r\n");
-            debugMsg(receivedMsg.topic);
-            debugMsg("\r\n");
+//            debugMsg(IotShadowDocumentTopic);
+//            debugMsg("\r\n");
+//            debugMsg(receivedMsg.topic);
+//            debugMsg("\r\n");
             if(strncmp((char *)receivedMsg.topic, IotShadowDocumentTopic, receivedMsg.topic_len) == 0)
             {
 
@@ -601,8 +622,10 @@ static wiced_result_t mqtt_connection_event_cb( wiced_mqtt_object_t mqtt_object,
                     desired = cJSON_GetObjectItem(state, "desired");
                     reported = cJSON_GetObjectItem(state, "reported");
                     debugMsg("\r\n");
+                    debugMsg("Desired: \r\n");
                     debugMsg(cJSON_Print(desired));
                     debugMsg("\r\n");
+                    debugMsg("Reported \r\n");
                     debugMsg(cJSON_Print(reported));
                     debugMsg("\r\n");
 
@@ -615,6 +638,10 @@ static wiced_result_t mqtt_connection_event_cb( wiced_mqtt_object_t mqtt_object,
                         managerPassword = cJSON_GetObjectItem(desired, "managerPassword")->valuestring;
                         customerPassword = cJSON_GetObjectItem(desired, "customerPassword")->valuestring;
                         reportShadow(managerPassword, customerPassword);
+                    }
+                    else
+                    {
+                        debugMsg("\r\nData is same!!\r\n");
                     }
                 }
                 else
@@ -731,7 +758,7 @@ void peripheralFunction(wiced_thread_arg_t arg)
     int i = 0;
     int x,y;
     bool readInput1 = 0, readInput2 = 0;
-    int count = 0, lastCount = 0;
+    int count = 0, lastCount = 1000;
     char  countMsgOut[50];
     bool managerPasswordOk = false;
     int timeCount = 0, time = 0;
@@ -740,42 +767,37 @@ void peripheralFunction(wiced_thread_arg_t arg)
 
     while(1)
     {
+//        debugMsg("\r\n **In peripheral function\r\n");
         kevin_gpio_write(ARD_GPIO12, 0);
         kevin_gpio_write(ARD_GPIO12, 1);
-        wiced_rtos_delay_microseconds(20);
+        wiced_rtos_delay_milliseconds(1);
         kevin_gpio_write(ARD_GPIO12, 0);
         while(!wiced_gpio_input_get(ARD_GPIO13));
         count = 0;
         while(wiced_gpio_input_get(ARD_GPIO13))
         {
             count++;
-            wiced_rtos_delay_microseconds(1);
+            wiced_rtos_delay_milliseconds(1);
         }
         if(count > lastCount*10)
         {
             if(managerPasswordOk == false)
             {
                 //Give alarm message
-                lcd_send_cmd(0x01);
-                lcd_put_cur(0, 0);
-                lcd_send_string("Alarm!!!!");
-                wiced_rtos_delay_milliseconds(2000);
-                lcd_send_cmd(0x01);
+                mqttControl("The door is opened without verify!!");
                 managerPasswordOk = false;
             }
             else
             {
-                lcd_send_cmd(0x01);
-                lcd_put_cur(0, 0);
-                lcd_send_string("The door is open");
-                wiced_rtos_delay_milliseconds(2000);
+                mqttControl("The door is opened with verify.");
+                wiced_rtos_delay_milliseconds(1000);
                 lcd_send_cmd(0x01);
                 managerPasswordOk = false;
             }
         }
         lastCount = count;
-        sprintf(countMsgOut, (char*)countMsgIn, count);
-        debugMsg(countMsgOut);
+//        sprintf(countMsgOut, (char*)countMsgIn, count);
+//        debugMsg(countMsgOut);
 
         for(x=0;x<4;x++)
         {
@@ -802,7 +824,6 @@ void peripheralFunction(wiced_thread_arg_t arg)
         }
         if(managerPasswordOk == true)
         {
-            debugMsg("12347\r\n");
             if(timeCount == 100)
             {
                 if(time > 60)
@@ -832,57 +853,156 @@ void peripheralFunction(wiced_thread_arg_t arg)
         }
         else
         {
-            debugMsg("45600\r\n");
             time = 0;
             timeCount = 0;
         }
         wiced_rtos_delay_milliseconds(10);
+//        debugMsg("\r\nPeripheral function end\r\n");
     }
 }
 
 
-void receiveUART(wiced_thread_arg_t arg)
+void WashingMachineAPIFunction(wiced_thread_arg_t arg)
 {
     uint32_t dataSize = RxDataSize;
-
-    while(wiced_uart_receive_bytes(WICED_UART_3,receiveData,&dataSize,WICED_WAIT_FOREVER ) == WICED_SUCCESS)
+    bool getWaterLevel = false, machineIsHealthy = true;
+    char receiveData[20]="";
+    char preMachineState[20]="060350000100";
+//    enum APIType {
+//            MACHINE_STATUS,
+//            WATER_LEVEL,
+//            CHECK_ERROR,
+//            GET_WASHING_TIME,
+//            WASHING_STATUS
+//    };
+    enum APIType api_type = MACHINE_STATUS;
+    while(1)
     {
-
-            //Set the condition determine when does MQTT should send the data to Rule Engine
-            if(strcmp(receiveData , "12345") > 0)
+        for(api_type=MACHINE_STATUS ; api_type<=WASHING_STATUS ; api_type++)
+        {
+            switch (api_type)
             {
-                if(strcmp(receiveData , "55555") > 0)
-                    shadowSW = 1;
-                else
-                    shadowSW = 0;
-                //shadowSW is used to choose shadow state
-                switch(shadowSW)
+                case MACHINE_STATUS:
                 {
-                    case 0:
-                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"managerPassword\": \"%s\" , \"customerPassword\":\"%s\"} } }", off, off);
-                        break;
-                    case 1:
-                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"managerPassword\": \"%s\" , \"customerPassword\":\"%s\"} } }", off, on);
-                        break;
-                    case 2:
-                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"managerPassword\": \"%s\" , \"customerPassword\":\"%s\"} } }", on, off);
-                        break;
-                    case 3:
-                        sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"managerPassword\": \"%s\" , \"customerPassword\":\"%s\"} } }", on, on);
-                        break;
-                    default:
-                        break;
+                    callWashingMachineAPI(api_type);
+                    if(wiced_uart_receive_bytes(WICED_UART_3,receiveData,&dataSize,WICED_WAIT_FOREVER ) == WICED_SUCCESS)
+                    {
+                        debugMsg("\r\nmaching status\r\n");
+                        if(strcmp(preMachineState, "060350000100")==0 && strcmp(receiveData, "060350000257")==0)
+                        {
+                            getWaterLevel = true;
+                            //ccc通知開始洗衣
+                        }
+                        else if(strcmp(preMachineState, "060350000257")==0 && strcmp(receiveData, "060350000550")==0)
+                        {
+                            //ccc通知洗衣完成
+                        }
+                        strcpy(preMachineState, receiveData);
+                    }
+                    break;
                 }
+                case WATER_LEVEL:
+                {
+                    if(getWaterLevel == true)
+                    {
+                        callWashingMachineAPI(api_type);
+                        if(wiced_uart_receive_bytes(WICED_UART_3,receiveData,&dataSize,WICED_WAIT_FOREVER ) == WICED_SUCCESS)
+                        {
+                            debugMsg("\r\nwater level\r\n");
+                            int temp = receiveData[7]-48;
+                            switch(temp)
+                            {
+                                case 0:
+                                {
+                                    //ccc通知水位為少量水位、給水0分
+                                    break;
+                                }
+                                case 1:
+                                {
 
-                root = cJSON_Parse(ShadowUpdateStr);
-                out=cJSON_Print(root);
-                //Send what data? Copy to msg (We will publish msg to Topic)
-                strcpy(msg,out);
-                //wiced_uart_transmit_bytes(WICED_UART_1 , msg , strlen(msg));
-                wiced_rtos_set_semaphore( &wake_semaphore );
+                                    break;
+                                }
+                                case 2:
+                                {
+
+                                    break;
+                                }
+                                case 3:
+                                {
+
+                                    break;
+                                }
+                                case 4:
+                                {
+
+                                    break;
+                                }
+                            }
+                            getWaterLevel = false;
+                        }
+                    }
+                    break;
+                }
+                case CHECK_ERROR:
+                {
+                    if(checkMySelf==true || machineIsHealthy==true)
+                    {
+                        callWashingMachineAPI(api_type);
+                        if(wiced_uart_receive_bytes(WICED_UART_3,receiveData,&dataSize,WICED_WAIT_FOREVER ) == WICED_SUCCESS)
+                        {
+                            debugMsg("\r\ncheck error\r\n");
+                            if(receiveData[6]=='5' && receiveData[7]=='5')  //Stand for machine has some problem
+                            {
+                                machineIsHealthy = false;
+                                //ccc通知機器出問題
+                            }
+                            else
+                            {
+                                if(machineIsHealthy==false) //Stand for machine has some problem, but now is fixed
+                                {
+                                    machineIsHealthy = true;
+                                    //ccc通知機器修好
+                                }
+                            }
+                        }
+                        checkMySelf = false;
+                    }
+                    break;
+                }
+                case GET_WASHING_TIME:
+                {
+                    if(getWashingTime == true)
+                    {
+                        callWashingMachineAPI(api_type);
+                        if(wiced_uart_receive_bytes(WICED_UART_3,receiveData,&dataSize,WICED_WAIT_FOREVER ) == WICED_SUCCESS)
+                        {
+                            debugMsg("\r\nmachine time\r\n");
+                            int hour, min;
+                            hour = (receiveData[6]-48)*10+(receiveData[7]-48);
+                            min = (receiveData[8]-48)*10+(receiveData[9]-48);
+                            //ccc回傳剩餘時間
+                        }
+                        getWashingTime = false;
+                    }
+                    break;
+                }
+                case WASHING_STATUS:
+                {
+                    if(checkWashingStatus == true)
+                    {
+                        callWashingMachineAPI(api_type);
+                        if(wiced_uart_receive_bytes(WICED_UART_3,receiveData,&dataSize,WICED_WAIT_FOREVER ) == WICED_SUCCESS)
+                        {
+                            debugMsg("\r\nwashing status\r\n");
+                            //ccc回傳目前洗衣狀態
+                        }
+                        checkWashingStatus = false;
+                    }
+                    break;
+                }
             }
+        }
     }
-
 }
 
 //Publish Message to
@@ -898,13 +1018,14 @@ void PublishMessage(wiced_thread_arg_t arg)
 
         //Wait for sending data(Maybe when receive correct data)
         wiced_rtos_get_semaphore( &wake_semaphore,WICED_WAIT_FOREVER );
+        debugMsg("\r\n **In PublishMessage function\r\n");
         if ( is_connected == WICED_FALSE)
         {
             break;
         }
 
         //Publish the data
-        debugMsg(("[MQTT] Publishing..."));
+        debugMsg(("[MQTT] Publishing...\r\n"));
         do
         {
             /*
@@ -912,7 +1033,7 @@ void PublishMessage(wiced_thread_arg_t arg)
              * It has already create a safe connection to AWS IoT Broker
              * WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE : This means QoS = 1 (proof your message will arrive, but maybe many times)
              */
-            ret = mqtt_app_publish( mqtt_object, WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE, (uint8_t*)/* "Control"*/IotShadowTopic, (uint8_t*) msg, strlen( msg ) );
+            ret = mqtt_app_publish( mqtt_object, WICED_MQTT_QOS_DELIVER_AT_LEAST_ONCE, (uint8_t*)mqttTopic, (uint8_t*) msg, strlen( msg ) );
             retries++ ;
         } while ( ( ret != WICED_SUCCESS ) && ( retries < MQTT_PUBLISH_RETRY_COUNT ) );
         if ( ret != WICED_SUCCESS )
@@ -943,24 +1064,77 @@ void debugMsg(char debugMessage[50])
 {
     wiced_uart_transmit_bytes(WICED_UART_1 , debugMessage , strlen(debugMessage));
 }
+//enum APIType {
+//        MACHINE_STATUS,
+//        WATER_LEVEL,
+//        CHECK_ERROR,
+//        GET_WASHING_TIME,
+//        WASHING_STATUS
+//};
+void callWashingMachineAPI(enum APIType apiType)
+{
+    char instruction[20];
+    switch (apiType)
+    {
+        case MACHINE_STATUS:
+        {
+            strcpy(instruction, "060350FFFF55");
+            break;
+        }
+        case WATER_LEVEL:
+        {
+            strcpy(instruction, "060357FFFF52");
+            break;
+        }
+        case CHECK_ERROR:
+        {
+            strcpy(instruction, "060319FFFF1C");
+            break;
+        }
+        case GET_WASHING_TIME:
+        {
+            strcpy(instruction, "060313FFFF16");
+            break;
+        }
+        case WASHING_STATUS:
+        {
+            strcpy(instruction, "060303FFFF06");
+            break;
+        }
+    }
+    wiced_uart_transmit_bytes(WICED_UART_3 , instruction , 12);
+}
 
 void reportShadow(char *managerPasswords, char *customerPasswords)
 {
+    debugMsg("**In reportShadow function!!\r\n");
     sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"reported\": { \"managerPassword\": \"%s\" , \"customerPassword\":\"%s\"} } }", managerPasswords, customerPasswords);
     root = cJSON_Parse(ShadowUpdateStr);
     out=cJSON_Print(root);
     //Send what data? Copy to msg (We will publish msg to Topic)
     strcpy(msg,out);
+    strcpy(mqttTopic, IotShadowTopic);
     wiced_rtos_set_semaphore( &wake_semaphore );
 }
 
 void desireShadow(char *managerPasswords, char *customerPasswords)
 {
+    debugMsg("**In desireShadow function!!\r\n");
     sprintf(ShadowUpdateStr, (char *)"{ \"state\": {\"desired\": { \"managerPassword\": \"%s\" , \"customerPassword\":\"%s\"} } }", managerPasswords, customerPasswords);
     root = cJSON_Parse(ShadowUpdateStr);
     out=cJSON_Print(root);
     //Send what data? Copy to msg (We will publish msg to Topic)
     strcpy(msg,out);
+    strcpy(mqttTopic, IotShadowTopic);
+    wiced_rtos_set_semaphore( &wake_semaphore );
+}
+
+void mqttControl(char *mqttMsg)
+{
+
+    //Send what data? Copy to msg (We will publish msg to Topic)
+    strcpy(msg,mqttMsg);
+    strcpy(mqttTopic, IotControlTopic);
     wiced_rtos_set_semaphore( &wake_semaphore );
 }
 
@@ -986,12 +1160,14 @@ void application_start()
     wiced_gpio_init(ARD_GPIO1, OUTPUT_PUSH_PULL);
     wiced_gpio_init(ARD_GPIO2, OUTPUT_PUSH_PULL);
     wiced_gpio_init(ARD_GPIO3, OUTPUT_PUSH_PULL);
+    wiced_gpio_init(ARD_GPIO12, OUTPUT_PUSH_PULL);
+    wiced_gpio_init(ARD_GPIO13, INPUT_PULL_UP);
     wiced_gpio_init(WICED3, OUTPUT_PUSH_PULL);
     wiced_gpio_init(WICED4, OUTPUT_PUSH_PULL);
     wiced_gpio_init(WICED5, OUTPUT_PUSH_PULL);
     wiced_gpio_init(WICED6, OUTPUT_PUSH_PULL);
-    wiced_gpio_init(ARD_GPIO12 , OUTPUT_PUSH_PULL);
-    wiced_gpio_init(ARD_GPIO13 , INPUT_PULL_UP);
+    wiced_gpio_init(WICED29 , OUTPUT_PUSH_PULL);
+    wiced_gpio_init(WICED27 , INPUT_PULL_UP);
    // wiced_gpio_init(ARD_GPIO11 , OUTPUT_PUSH_PULL);
 
     //Customize UART
@@ -1018,6 +1194,7 @@ void application_start()
     //Initial UART1, this is use for debugging
     wiced_uart_init(WICED_UART_1,&uart_config,NULL);
     debugMsg("Application start\r\n");
+    mqttTopic = (char*)malloc(sizeof(char)*100);
 
     /* 
      * Get AWS root certificate, client certificate and private key respectively 
@@ -1161,9 +1338,9 @@ void application_start()
         //Start to run Publishing function
         wiced_rtos_create_thread(&PublishMessageHandle,9,"PublishMessageThread",PublishMessage,1024,NULL);
         //Start to run RX function
-        wiced_rtos_create_thread(&receiveUartHandle,10,"UartRxThread",receiveUART,1024,NULL);
+        wiced_rtos_create_thread(&receiveUartHandle,10,"UartRxThread",WashingMachineAPIFunction,1024,NULL);
         //Start to run peripheral function( Handle 4*4 keypad, ultra sound sensor)
-        wiced_rtos_create_thread(&PeripheralHandle,11,"PeripheralFunctionThread",peripheralFunction,1024,NULL);
+        wiced_rtos_create_thread(&PeripheralHandle,8,"PeripheralFunctionThread",peripheralFunction,1024,NULL);
 
         //Every time turn on the board, update the shadow
         //(If reported data are not same as desired data, then update reported data and relative variables)
