@@ -46,3 +46,7 @@ The embedded system check machine's status constantly. If the washing machine ha
 When the maintenance provider fixed it, they need to press the check-itself button. Then the machine will check by itself. If it really been fixed, it will publish the message to the cloud. The cloud will add the repaired record to the block chain.
 
 ![](https://i.imgur.com/LQhXFtd.png)
+
+## Aspect
+
+![](https://i.imgur.com/EbzzwYf.jpg)
