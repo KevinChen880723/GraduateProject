@@ -49,4 +49,4 @@ When the maintenance provider fixed it, they need to press the check-itself butt
 
 ## Aspect
 
-<img src="https://i.imgur.com/Mj0Vp1J.jpg" width="400">
+<img src="https://i.imgur.com/Mj0Vp1J.jpg" width="600">
