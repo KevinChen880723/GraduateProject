@@ -34,6 +34,7 @@ After changing password, the password stored on the cloud will change to new pas
 #### Warning Message
 
 When the door of washing machine is open by the improper way, the embedded system will send message to the cloud by using MQTT protocol. Then the cloud will send the warning message to the user.
+
 ![](https://i.imgur.com/Kef2EmI.png)
 
 ### Check Machine's status
