@@ -19,9 +19,11 @@ When we using the washing machine in dormitory, we usually meet the condition th
 This is the LCD screen that can show some information when users enter/change the password.
 
 If they want to change the password, they need to enter the old password.
+
 ![](https://i.imgur.com/AazfL7T.png)
 
 If the old password correct then enter the new password.
+
 ![](https://i.imgur.com/e2WVFSq.png)
 
 After changing password, the password stored on the cloud will change to new password.
