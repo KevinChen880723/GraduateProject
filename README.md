@@ -1,5 +1,5 @@
 # SmartLifeWashingMachine
-## abstract
+## Abstract
 This is the embedded part of a project that aim to change inconvenient parts of using washing machine.
 
 ### What are inconvenient parts of using washing machine?
@@ -47,6 +47,6 @@ When the maintenance provider fixed it, they need to press the check-itself butt
 
 ![](https://i.imgur.com/LQhXFtd.png)
 
-## Aspect
+## Physical Aappearance
 
 <img src="https://i.imgur.com/Mj0Vp1J.jpg" width="600">
